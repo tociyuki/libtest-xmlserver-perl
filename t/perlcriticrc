@@ -1,0 +1,125 @@
+verbose = 8
+
+# Write `qw(foo bar baz)' instead of `('foo', 'bar', 'baz')'.
+[-CodeLayout::ProhibitQuotedWordLists]
+
+# Must run code through perltidy.
+[-CodeLayout::RequireTidyCode]
+
+# Don't write long "if-elsif-elsif-elsif-elsif...else" chains.
+[ControlStructures::ProhibitCascadingIfElse]
+# The maximum number of alternatives that will be allowed.
+# Minimum value 1. No maximum.
+max_elsif = 7
+
+# Write `if($condition){ do_something() }' instead of `do_something() if $condition'.
+#[ControlStructures::ProhibitPostfixControls]
+# The permitted postfix controls.
+# Valid values: for, foreach, if, unless, until, while.
+# allow = 
+# The exempt flow control functions.
+#flowcontrol = carp cluck confess croak die exit goto warn next last
+
+[Documentation::RequirePodSections]
+lib_sections    = NAME | VERSION | SYNOPSIS | AUTHOR | LICENSE AND COPYRIGHT
+script_sections = NAME | VERSION | USAGE | AUTHOR | LICENSE AND COPYRIGHT
+
+# Use functions from Carp instead of `warn' or `die'.
+#[ErrorHandling::RequireCarping]
+# Don't complain about die or warn if the message ends in a newline.
+# allow_messages_ending_with_newlines = 1
+
+# You can't depend upon the value of `$@'/`$EVAL_ERROR' to tell whether an `eval' failed.
+[-ErrorHandling::RequireCheckingReturnValueOfEval]
+
+# Never write `select($fh)'.
+#          use IO::Handle;
+#          $fh->autoflush();
+#          *STDOUT->autoflush();
+#[InputOutput::ProhibitOneArgSelect]
+
+# Write `print {$FH} $foo, $bar;' instead of `print $FH $foo, $bar;'.
+#[InputOutput::RequireBracedFileHandleWithPrint]
+
+# Write `my $error = close $fh;' instead of `close $fh;'.
+#[InputOutput::RequireCheckedClose]
+
+# Do not use `tie'.
+#[Miscellanea::ProhibitTies]
+
+# Put source-control keywords in every file.
+[Miscellanea::RequireRcsKeywords]
+keywords = Id
+#keywords = Id Revision
+
+# Export symbols via `@EXPORT_OK' or `%EXPORT_TAGS' instead of `@EXPORT'.
+[-Modules::ProhibitAutomaticExportation]
+
+# Minimize complexity in code that is outside of subroutines.
+[-Modules::ProhibitExcessMainComplexity]
+# The maximum complexity score allowed.
+# Minimum value 1. No maximum.
+# max_mccabe = 20
+
+# Put packages (especially subclasses) in separate files.
+#[Modules::ProhibitMultiplePackages]
+
+# Write `require Module' instead of `require 'Module.pm''.
+#[Modules::RequireBarewordIncludes]
+
+# Distinguish different program components by case.
+#[NamingConventions::Capitalization]
+
+# Write `@{ $array_ref }' instead of `@$array_ref'.
+#[References::ProhibitDoubleSigils]
+
+[-RegularExpressions::ProhibitEnumeratedClasses]
+
+[-RegularExpressions::ProhibitComplexRegexes]
+
+# Return failure with bare `return' instead of `return undef'.
+#[Subroutines::ProhibitExplicitReturnUndef]
+
+# Always unpack `@_' first.
+[Subroutines::RequireArgUnpacking]
+# The number of statements to allow without unpacking.
+# Minimum value 0. No maximum.
+short_subroutine_statements = 3
+
+# End every path through a subroutine with an explicit `return' statement.
+#[Subroutines::RequireFinalReturn]
+# The additional subroutines to treat as terminal.
+# Values that are always included:
+#   Carp::confess, Carp::croak, confess, croak, die, exec, exit, throw.
+# terminal_funcs = 
+
+# Prohibit various flavors of "no strict".
+[TestingAndDebugging::ProhibitNoStrict]
+allow = refs
+
+# Write `"\N{DELETE}"' instead of `"\x7F"', etc.
+[-ValuesAndExpressions::ProhibitEscapedCharacters]
+
+# Long chains of method calls indicate tightly coupled code.
+[-ValuesAndExpressions::ProhibitLongChainsOfMethodCalls]
+
+# Don't use values that don't explain themselves.
+#[ValuesAndExpressions::ProhibitMagicNumbers]
+
+# Write ` 141_234_397.0145 ' instead of ` 141234397.0145 '.
+[-ValuesAndExpressions::RequireNumberSeparators]
+
+[ValuesAndExpressions::RequireInterpolationOfMetachars]
+rcs_keywords = Id Source Revision Date Author
+
+# Use `my' instead of `local', except when you have to.
+#[Variables::ProhibitLocalVars]
+
+# Avoid `$`', `$&', `$'' and their English equivalents.
+#[Variables::ProhibitMatchVars]
+
+# Write `$EVAL_ERROR' instead of `$@'.
+[Variables::ProhibitPunctuationVars]
+allow = $@ $! $+
+
+

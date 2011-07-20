@@ -1,5 +1,8 @@
 Revision history for Test-XmlServer
 
-0.0.1  Wed Jul 20 18:07:58 2011
-       Initial release.
+0.002  Wed Jul 20 13:06:27 2011 GMT
+    ! using request formdata hashref to arrayref.
+
+0.001  Wed Jul 20 09:07:58 2011 GMT
+    + Initial release.
 

@@ -32,7 +32,7 @@ __END__
 [
     'GET', '/signin',
     [],
-    {},
+    [],
 ]
 --- expected
 [
@@ -62,11 +62,11 @@ __END__
 [
     'POST', '/signin',
     [],
-    {
+    [
         'username' => 'alice',
         'password' => 'sa^6Xwr_Ukej!dj2P',
         'signin' => ' Sign In ',
-    },
+    ],
 ]
 --- expected
 [
@@ -83,11 +83,11 @@ __END__
 [
     'POST', '/signin',
     [],
-    {
+    [
         'username' => 'alice',
         'password' => 'alice!inval_password',
         'signin' => ' Sign In ',
-    },
+    ],
 ]
 --- expected
 [
@@ -117,7 +117,7 @@ __END__
 [
     'GET', '/signin',
     ['Cookie' => 'ssid=Rr6Mq4gA1u93KXrHXDuNfFfclFcS5eB9'],
-    {},
+    [],
 ]
 --- expected
 [
@@ -134,11 +134,11 @@ __END__
 [
     'POST', '/signin',
     ['Cookie' => 'ssid=Rr6Mq4gA1u93KXrHXDuNfFfclFcS5eB9'],
-    {
+    [
         'username' => 'alice',
         'password' => 'sa^6Xwr_Ukej!dj2P',
         'signin' => ' Sign In ',
-    },
+    ],
 ]
 --- expected
 [
@@ -155,11 +155,11 @@ __END__
 [
     'POST', '/signin',
     ['Cookie' => 'ssid=Rr6Mq4gA1u93KXrHXDuNfFfclFcS5eB9'],
-    {
+    [
         'username' => 'alice',
         'password' => 'alice!inval_password',
         'signin' => ' Sign In ',
-    },
+    ],
 ]
 --- expected
 [
@@ -176,7 +176,7 @@ __END__
 [
     'GET', '/',
     ['Cookie' => 'ssid=Rr6Mq4gA1u93KXrHXDuNfFfclFcS5eB9'],
-    {},
+    [],
 ]
 --- expected
 [
@@ -200,7 +200,7 @@ __END__
 [
     'GET', '/',
     [],
-    {},
+    [],
 ]
 --- expected
 [
@@ -224,7 +224,7 @@ __END__
 [
     'GET', '/signout',
     ['Cookie' => 'ssid=Rr6Mq4gA1u93KXrHXDuNfFfclFcS5eB9'],
-    {},
+    [],
 ]
 --- expected
 [
@@ -241,7 +241,7 @@ __END__
 [
     'GET', '/signout',
     [],
-    {},
+    [],
 ]
 --- expected
 [

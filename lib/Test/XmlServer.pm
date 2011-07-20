@@ -5,7 +5,7 @@ use Test::XmlServer::CommonData;
 use Test::XmlServer::Document;
 
 # $Id$
-use version; our $VERSION = '0.001';
+use version; our $VERSION = '0.002';
 
 sub request { return shift->{'request'} }
 sub expected { return shift->{'expected'} }
@@ -19,7 +19,7 @@ sub new {
         $request->path_info($block_request->[1]);
     }
     $request->replace('header' => $block_request->[2]);
-    $request->replace('param' => [%{$block_request->[3] || {}}]);
+    $request->replace('param' => $block_request->[3]);
     my $expected = Test::XmlServer::CommonData->new;
     $expected->code($block_expected->[0]);
     $expected->replace('header' => $block_expected->[1]);
@@ -113,7 +113,7 @@ Test::XmlServer - easy to test your PSGI Application responding XHTML.
 
 =head1 VERSION
 
-0.001
+0.002
 
 =head1 SYNOPSIS
 
@@ -151,11 +151,11 @@ Test::XmlServer - easy to test your PSGI Application responding XHTML.
         # request headers
         [],
         # request formdata
-        {
+        [
             'username' => 'alice',
             'password' => 'alice+password',
             'signin' => ' Sign In ',
-        },
+        ],
     ]
     --- expected
     [
@@ -175,11 +175,11 @@ Test::XmlServer - easy to test your PSGI Application responding XHTML.
     [
         'POST', '/signin',
         [],
-        {
+        [
             'username' => 'bob',
             'password' => 'bob!password',
             'signin' => ' Sign In ',
-        },
+        ],
     ]
     --- expected
     [
@@ -239,6 +239,10 @@ Returns the cooked expected.
 =head1 DEPENDENCIES
 
 None.
+
+=head1 REPOSITORY
+
+L<https://github.com/tociyuki/libtest-xmlserver-perl>
 
 =head1 AUTHOR
 

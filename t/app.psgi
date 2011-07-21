@@ -2,7 +2,7 @@ package DemoApplication;
 use strict;
 use warnings;
 
-our $VERSION = '0.001';
+our $VERSION = '0.002';
 # $Id$
 # DemoApplication - demonstration for PSGI application of Test::XmlServer
 
@@ -39,22 +39,6 @@ sub mk_accessors {
     return;
 }
 
-package WebResponder;
-use strict;
-use warnings;
-use Encode;
-use Carp;
-use parent qw(-norequire WebComponent);
-
-__PACKAGE__->mk_accessors('env');
-
-my %METHODS = (
-    'HEAD' => 'get',
-    'GET' => 'get',
-    'POST' => 'post',
-    'PUT' => 'put',
-    'DELETE' => 'del',
-);
 my $AMP = qr{(?:[a-z][a-z0-9_]*|\#(?:[0-9]{1,5}|x[0-9A-F]{2,4}))}imsx;
 my %XML_SPECIAL = (
     q{&} => q{&amp;}, q{<} => q{&lt;}, q{>} => q{&gt;},
@@ -92,52 +76,236 @@ sub encode_uri {
     return $uri;
 }
 
+package WebResponse;
+use strict;
+use warnings;
+use Encode;
+use Carp;
+use parent qw(-norequire WebComponent);
+
+__PACKAGE__->mk_accessors('code', 'body', 'controller');
+
+sub content_type   { return shift->header('Content-Type' => @_) }
+sub content_length { return shift->header('Content-Length' => @_) }
+
+sub replace {
+    my($self, $attr, @arg) = @_;
+    if (ref $self->{$attr} eq 'HASH' && $attr ne 'env') {
+        %{$self->{$attr}} = ();
+        my $a = @arg == 1 && ref $arg[0] eq 'ARRAY' ? $arg[0] : \@arg;
+        for (0 .. -1 + int @{$a} / 2) {
+            my $i = $_ * 2;
+            $self->$attr($a->[$i] => $a->[$i + 1]);
+        }
+    }
+    else {
+        $self->$attr(@arg);
+    }
+    return $self;
+}
+
+sub redirect {
+    my($self, @arg) = @_;
+    if (@arg) {
+        $self->header('Location' => $arg[0]);
+        $self->code(@arg > 1 ? $arg[1] : '303');
+        $self->content_type(undef);
+        $self->content_length(undef);
+        $self->body(undef);
+    }
+    return $self->header('Location');
+}
+
+sub header {
+    my($self, @arg) = @_;
+    @arg or return keys %{$self->{'header'}};
+    my $k = shift @arg;
+    if (@arg) {
+        if (@arg == 1 && ! defined $arg[0]) {
+            return if ! exists $self->{'header'}{$k};
+            my $v = delete $self->{'header'}{$k};
+            return wantarray ? @{$v} : $v->[-1];
+        }
+        if (lc $k ne 'set-cookie') {
+            $self->{'header'}{$k}[0] = $arg[0];
+        }
+        elsif (@arg == 1 && ref $arg[0] eq 'ARRAY') {
+            @{$self->{'header'}{$k}} = @{$arg[0]};
+        }
+        else {
+            push @{$self->{'header'}{$k}}, @arg;
+        }
+    }
+    return if ! exists $self->{'header'}{$k};
+    return wantarray ? @{$self->{'header'}{$k}} : $self->{'header'}{$k}[-1];
+}
+
+sub cookie {
+    my($self, @arg) = @_;
+    return keys %{$self->{'cookie'}} if ! @arg;
+    my $k = shift @arg;
+    if (@arg) {
+        if (@arg == 1 && ! defined $arg[0]) {
+            return delete $self->{'cookie'}{$k};
+        }
+        if (@arg == 1 && ref $arg[0] eq 'HASH') {
+            $self->{'cookie'}{$k} = {'name' => $k, %{$arg[0]} };
+        }
+        else {
+            $self->{'cookie'}{$k} = {'name' => $k, 'value' => @arg};
+        }
+    }
+    return $self->{'cookie'}{$k};
+}
+
+sub finalize {
+    my($self, $env) = @_;
+    if (! $self->code) {
+        $env->{'psgi.error'}->print("No status code\n");
+        my $responder = $self->controller->new(
+            'env' => $env,
+            'response' => $self,
+        );
+        return $responder->internal_server_error->response->finalize($env);
+    }
+    $self->finalize_cookie;
+    my $code = $self->code;
+    my $code_most = substr $code, 0, 1;
+    my $code_least = substr $code, 1;
+    if ($code_most eq '4' || $code_most eq '5') {
+        $self->header('Set-Cookie', undef);
+        $self->header('Location', undef);
+    }
+    elsif (($env->{'SERVER_PROTOCOL'} || 'HTTP/1.0') eq 'HTTP/1.0') {
+        if ($code == 303 || $code == 307) {
+            $self->code(302);
+            ($code_most, $code_least) = (3, 2);
+        }
+    }
+    if ($code_most == 1 || $code == 204 || $code == 304) {
+        $self->content_length(undef);
+        $self->body(undef);
+    }
+    elsif (! defined $self->content_length) {
+        use bytes;
+        my $byte_size = defined $self->body ? bytes::length($self->body) : 0;
+        $self->content_length($byte_size);
+    }
+    if ($env->{'REQUEST_METHOD'} eq 'HEAD') {
+        $self->body(undef);
+    }
+    my $response = [$self->code, [], []];
+    for my $name ($self->header) {
+        push @{$response->[1]}, map {
+            ($name => join "\x0d\x0a ", split /[\r\n]+[\t\040]*/msx, $_);
+        } $self->header($name);
+    }
+    if (defined $self->body) {
+        $response->[2][0] = $self->body;
+        if (utf8::is_utf8($response->[2][0])) {
+            $response->[2][0] = Encode::encode('UTF-8', $response->[2][0]);
+        }
+    }
+    return $response;
+}
+
+sub finalize_cookie {
+    my($self) = @_;
+    my @a = qw(Sun Mon Tue Wed Thu Fri Sat);
+    my @b = qw(Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec);
+    for my $key ($self->cookie) {
+        my $cookie = $self->cookie($key);
+        my @dough = (
+            $self->encode_uri($cookie->{'name'})
+            . q{=} . $self->encode_uri($cookie->{'value'}),
+            ($cookie->{'domain'} ?
+                'domain=' . $self->encode_uri($cookie->{'domain'}) : ()),
+            ($cookie->{'path'}) ?
+                'path=' . $self->encode_uri($cookie->{'path'}) : (),
+        );
+        if (defined $cookie->{'expires'}) {
+            my($s, $min, $h, $d, $mon, $y, $w) = gmtime $cookie->{'expires'};
+            push @dough, sprintf 'expires=%s, %02d-%s-%04d %02d:%02d:%02d GMT',
+                $a[$w], $d, $b[$mon], $y + 1900, $h, $min, $s;
+        }
+        push @dough,
+            ($cookie->{'secure'} ? 'secure' : ()),
+            ($cookie->{'httponly'} ? 'HttpOnly' : ());
+        $self->header('Set-Cookie' => join q{; }, @dough);
+    }
+    return $self;
+}
+
+package WebResponder;
+use strict;
+use warnings;
+use Encode;
+use Carp;
+use parent qw(-norequire WebComponent);
+
+__PACKAGE__->mk_accessors('env', 'response');
+
+my %METHODS = (
+    'HEAD' => 'get',
+    'GET' => 'get',
+    'POST' => 'post',
+    'PUT' => 'put',
+    'DELETE' => 'del',
+);
+
 sub psgi_application {
     my($class, @controller_list) = @_;
     return sub{
         my($env) = @_;
-        my $path = $env->{'PATH_INFO'} || '/';
-        my $method = $METHODS{$env->{'REQUEST_METHOD'} || 'UNKOWN'};
-        $method ||= 'method_not_allowed';
-        for (0 .. -1 + int @controller_list / 2) {
-            my $pattern = $controller_list[$_ * 2];
-            my $controller = $controller_list[$_ * 2 + 1];
-            if (my @param = $path =~ m{\A$pattern\z}msx) {
-                if ($#- < 1) {
-                    @param = ();
+        my $responder = $class->new(
+            'env' => $env,
+            'response' => WebResponse->new('controller' => $class),
+        );
+        $responder->response->content_type('text/html; charset=utf-8');
+        # based on Try::Tiny
+        if (eval{
+            my $path = $env->{'PATH_INFO'} || '/';
+            my $method = $METHODS{$env->{'REQUEST_METHOD'} || 'UNKOWN'};
+            $method ||= 'method_not_allowed';
+            $responder->not_found;
+            for (0 .. -1 + int @controller_list / 2) {
+                my $pattern = $controller_list[$_ * 2];
+                my $controller = $controller_list[$_ * 2 + 1];
+                if (my @param = $path =~ m{\A$pattern\z}msx) {
+                    if ($#- < 1) {
+                        @param = ();
+                    }
+                    if (! $controller->can($method)) {
+                        $method = 'method_not_allowed';
+                    }
+                    $responder = $responder->detach($controller);
+                    $responder->response->code(200);
+                    $responder->response->body(undef);
+                    $responder = $responder->$method(@param);
+                    last;
                 }
-                if (! $controller->can($method)) {
-                    $method = 'method_not_allowed';
-                }
-                return $controller->new($env)->$method(@param);
             }
+            1;
+        }) {
+            # success. do nothing.
         }
-        return $class->new($env)->not_found;
+        elsif (ref $@) {
+            $responder = $@; # detach
+        }
+        else {
+            $env->{'psgi.errors'}->print("$@");
+            $responder->internal_server_error;
+        }
+        return $responder->response->finalize($env);
     };
-}
-
-sub new {
-    my($class, $env) = @_;
-    return bless {'env' => $env}, $class;
 }
 
 sub detach {
     my($self, $other) = @_;
-    return $other->new($self->env);
-}
-
-sub response {
-    my($self, $body, $code, @header) = @_;
-    $body = Encode::encode('UTF-8', $body);
-    return [
-        $code || 200,
-        [
-            'Content-Type' => 'text/html; charset=utf-8',
-            'Content-Length' => length $body,
-            @header,
-        ],
-        [$body],
-    ];    
+    return $other->new(
+        'env' => $self->env,
+        'response' => $self->response->replace('controller' => $other),
+    );
 }
 
 sub bad_request {
@@ -155,7 +323,9 @@ sub bad_request {
 </body>
 </html>
 XHTML
-    return $self->response($body, 400);
+    $self->response->code(400);
+    $self->response->body($body);
+    return $self;
 }
 
 sub not_found {
@@ -173,7 +343,9 @@ sub not_found {
 </body>
 </html>
 XHTML
-    return $self->response($body, 404);
+    $self->response->code(404);
+    $self->response->body($body);
+    return $self;
 }
 
 sub method_not_allowed {
@@ -192,7 +364,10 @@ sub method_not_allowed {
 </body>
 </html>
 XHTML
-    return $self->response($body, 405, 'Allow' => $allow);
+    $self->response->code(405);
+    $self->response->header('Allow' => $allow);
+    $self->response->body($body);
+    return $self;
 }
 
 sub internal_server_error {
@@ -210,7 +385,9 @@ sub internal_server_error {
 </body>
 </html>
 XHTML
-    return $self->response($body, 500);
+    $self->response->code(500);
+    $self->response->body($body);
+    return $self;
 }
 
 sub scan_form_urlencoded {
@@ -335,6 +512,7 @@ sub request_session_id {
 package TopPageUser;
 use strict;
 use warnings;
+use Carp;
 use Encode;
 use parent qw(-norequire ProtectedPage);
 
@@ -359,12 +537,14 @@ sub rendar {
 </body>
 </html>
 XHTML
-    return $self->response($body, 200);
+    $self->response->body($body);
+    return $self;
 }
 
 package TopPage;
 use strict;
 use warnings;
+use Carp;
 use Encode;
 use parent qw(-norequire ProtectedPage);
 
@@ -388,23 +568,27 @@ sub rendar {
 </body>
 </html>
 XHTML
-    return $self->response($body, 200);
+    $self->response->body($body);
+    return $self;
 }
 
 sub redirect {
     my($self, @arg) = @_;
-    return [303, ['Location' => q{/}], []] if ! @arg;
+    $self->response->redirect(q{/});
+    return $self if ! @arg;
     my($session) = @arg;
-    my $ssid = ref $session ? $self->encode_uri($session->session_id)
-        : '; expires=Mon, 01-Jan-2001 00:00:00 GMT';
-    return [
-        303,
-        [
-            'Location' => q{/},
-            'Set-Cookie' => "ssid=$ssid",
-        ],
-        [],
-    ];
+    if (ref $session) {
+        $self->response->cookie('ssid' => {
+            'value' => $session->session_id,
+        });
+    }
+    else {
+        $self->response->cookie('ssid' => {
+            'value' => q{},
+            'expires' => 978307200, # 1-Jan-2001 00:00:00 GMT
+        });
+    }
+    return $self;
 }
 
 sub get {
@@ -452,12 +636,14 @@ sub rendar {
 </body>
 </html>
 XHTML
-    return $self->response($body);
+    $self->response->body($body);
+    return $self;
 }
 
 sub redirect {
     my($self) = @_;
-    return [303, ['Location' => '/signin'], []];
+    $self->response->redirect('/signin');
+    return $self;
 }
 
 sub get {
@@ -529,7 +715,7 @@ DemoApplication - demonstration for PSGI application of Test::XmlServer
 
 =head1 VERSION
 
-0.001
+0.002
 
 =head1 SYNOPSYS
 
@@ -541,47 +727,79 @@ DemoApplication - demonstration for PSGI application of Test::XmlServer
 
 =over
 
-=item C<< WebComponent->new(%init_values) >>
+=over
+
+=item C<< $class->new(%init_values) >>
 
 =item C<< __PACKAGE__->mk_accessors(@names) >>
 
-=item C<< WebResponder->psgi_application(@controller_mappings) >>
+=item C<< $webcomponent->escape_xml($string) >>
 
-=item C<< WebResponder->new($env) >>
+=item C<< $webcomponent->escape_text($string) >>
 
-=item C<< $webresponder->detach($other_responder_class) >>
+=item C<< $webcomponent->decode_uri($url_encoded) >>
+
+=item C<< $webcomponent->encode_uri($string) >>
+
+=item C<< $webresponse->code([$numeric]) >>
+
+=item C<< $webresponse->body([$string]) >>
+
+=item C<< $webresponse->controller([$string]) >>
+
+=item C<< $webresponse->content_type([$string]) >>
+
+=item C<< $webresponse->content_length([$numeric]) >>
+
+=item C<< $webresponse->replace($key, $values) >>
+
+=item C<< $webresponse->redirect($location, [$code]) >>
+
+=item C<< $webresponse->header([$name, [$value]]) >>
+
+=item C<< $webresponse->cookie([$name, [\%value]]) >>
+
+=item C<< $webresponse->finalize($env) >>
+
+=item C<< $webresponse->finalize_cookie >>
+
+=item C<< WebResponder->psgi_application >>
+
+=item C<< $webresponder->env([$env]) >>
+
+=item C<< $webresponder->response([$response]) >>
+
+=item C<< $webresponder->detach($other_class) >>
 
 =item C<< $webresponder->bad_request >>
 
 =item C<< $webresponder->not_found >>
 
-=item C<< $webresponder->method_not_allowed >>
+=item C<< $webresponder->method_not_allowed([$allow]) >>
 
 =item C<< $webresponder->internal_server_error >>
 
-=item C<< $webresponder->escape_xml >>
+=item C<< $webresponder->scan_form_urlencoded($string) >>
 
-=item C<< $webresponder->escape_text >>
-
-=item C<< $webresponder->decode_uri >>
-
-=item C<< $webresponder->encode_uri >>
-
-=item C<< $webresponder->scan_form_urlencoded >>
-
-=item C<< $webresponder->scan_cookie >>
+=item C<< $webresponder->scan_cookie($string) >>
 
 =item C<< $webresponder->check(\%param, \%constraint) >>
 
-=item C<< Session->find($id) >>
+=item C<< UserSession->new_mock(%init_value) >>
 
-=item C<< Session->signin($username, $password) >>
+=item C<< UserSession->find($session_id) >>
+
+=item C<< UserSession->signin($username, $password) >>
+
+=item C<< UserSession->signout($session_id) >>
 
 =item C<< $protectedpage->request_session_id >>
 
+=item C<< $toppageuser->rendar >>
+
 =item C<< $toppage->rendar >>
 
-=item C<< $toppage->redirect >>
+=item C<< $toppage->redirect([$session]) >>
 
 =item C<< $toppage->get >>
 

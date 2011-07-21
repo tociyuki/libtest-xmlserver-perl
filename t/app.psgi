@@ -278,7 +278,7 @@ sub psgi_application {
                     if (! $controller->can($method)) {
                         $method = 'method_not_allowed';
                     }
-                    $responder = $responder->detach($controller);
+                    $responder = $responder->forward($controller);
                     $responder->response->code(200);
                     $responder->response->body(undef);
                     $responder = $responder->$method(@param);
@@ -300,7 +300,7 @@ sub psgi_application {
     };
 }
 
-sub detach {
+sub forward {
     my($self, $other) = @_;
     return $other->new(
         'env' => $self->env,
@@ -596,7 +596,7 @@ sub get {
     if (my $ssid = $self->request_session_id) {
         my $session = UserSession->find($ssid)->[0];
         if ($session) {
-            return $self->detach('TopPageUser')->rendar($session);
+            return $self->forward('TopPageUser')->rendar($session);
         }
     }
     return $self->rendar;
@@ -650,7 +650,7 @@ sub get {
     my($self) = @_;
     my $ssid = $self->request_session_id;
     if ($ssid && UserSession->find($ssid)->[0]) {
-        return $self->detach('TopPage')->redirect;
+        return $self->forward('TopPage')->redirect;
     }
     return $self->rendar;
 }
@@ -659,7 +659,7 @@ sub post {
     my($self) = @_;
     my $ssid = $self->request_session_id;
     if ($ssid && UserSession->find($ssid)->[0]) {
-        return $self->detach('TopPage')->redirect;
+        return $self->forward('TopPage')->redirect;
     }
     my $env = $self->env;
     my $fh = $env->{'psgi.input'};
@@ -675,7 +675,7 @@ sub post {
     my $username = $param->{'username'}[0];
     my $password = $param->{'password'}[0];
     if (my $session = UserSession->signin($username, $password)) {
-        return $self->detach('TopPage')->redirect($session);
+        return $self->forward('TopPage')->redirect($session);
     }
     return $self->rendar;
 }
@@ -690,9 +690,9 @@ sub get {
     my $ssid = $self->request_session_id;
     if ($ssid && UserSession->find($ssid)->[0]) {
         UserSession->signout($ssid);
-        return $self->detach('TopPage')->redirect(undef);
+        return $self->forward('TopPage')->redirect(undef);
     }
-    return $self->detach('TopPage')->redirect;
+    return $self->forward('TopPage')->redirect;
 }
 
 package DemoApplication;
@@ -769,7 +769,7 @@ DemoApplication - demonstration for PSGI application of Test::XmlServer
 
 =item C<< $webresponder->response([$response]) >>
 
-=item C<< $webresponder->detach($other_class) >>
+=item C<< $webresponder->forward($other_class) >>
 
 =item C<< $webresponder->bad_request >>
 

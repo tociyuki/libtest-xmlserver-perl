@@ -254,7 +254,7 @@ my %METHODS = (
 );
 
 sub psgi_application {
-    my($class, @controller_list) = @_;
+    my($class, $controller_list) = @_;
     return sub{
         my($env) = @_;
         my $responder = $class->new(
@@ -268,9 +268,9 @@ sub psgi_application {
             my $method = $METHODS{$env->{'REQUEST_METHOD'} || 'UNKOWN'};
             $method ||= 'method_not_allowed';
             $responder->not_found;
-            for (0 .. -1 + int @controller_list / 2) {
-                my $pattern = $controller_list[$_ * 2];
-                my $controller = $controller_list[$_ * 2 + 1];
+            for (0 .. -1 + int @{$controller_list} / 2) {
+                my $pattern = $controller_list->[$_ * 2];
+                my $controller = $controller_list->[$_ * 2 + 1];
                 if (my @param = $path =~ m{\A$pattern\z}msx) {
                     if ($#- < 1) {
                         @param = ();
@@ -314,13 +314,8 @@ sub bad_request {
     my $body = <<'XHTML';
 <!DOCTYPE html>
 <html>
-<head>
-<meta encoding="utf-8" />
-<title>Bad Request</title>
-</head>
-<body>
-<h1>Bad Request</h1>
-</body>
+<head><meta encoding="utf-8" /><title>Bad Request</title></head>
+<body><h1>Bad Request</h1></body>
 </html>
 XHTML
     $self->response->code(400);
@@ -334,13 +329,8 @@ sub not_found {
     my $body = <<'XHTML';
 <!DOCTYPE html>
 <html>
-<head>
-<meta encoding="utf-8" />
-<title>Not Found</title>
-</head>
-<body>
-<h1>Not Found</h1>
-</body>
+<head><meta encoding="utf-8" /><title>Not Found</title></head>
+<body><h1>Not Found</h1></body>
 </html>
 XHTML
     $self->response->code(404);
@@ -355,13 +345,8 @@ sub method_not_allowed {
     my $body = <<'XHTML';
 <!DOCTYPE html>
 <html>
-<head>
-<meta encoding="utf-8" />
-<title>Not Found</title>
-</head>
-<body>
-<h1>Not Found</h1>
-</body>
+<head><meta encoding="utf-8" /><title>Not Found</title></head>
+<body><h1>Not Found</h1></body>
 </html>
 XHTML
     $self->response->code(405);
@@ -376,13 +361,8 @@ sub internal_server_error {
     my $body = <<'XHTML';
 <!DOCTYPE html>
 <html>
-<head>
-<meta encoding="utf-8" />
-<title>Internal Server Error</title>
-</head>
-<body>
-<h1>Internal Server Error</h1>
-</body>
+<head><meta encoding="utf-8" /><title>Internal Server Error</title></head>
+<body><h1>Internal Server Error</h1></body>
 </html>
 XHTML
     $self->response->code(500);
@@ -390,7 +370,7 @@ XHTML
     return $self;
 }
 
-sub scan_form_urlencoded {
+sub scan_formdata {
     my($self, $data) = @_;
     my %param;
     for my $pair (split /[&;]/msx, $data) {
@@ -405,8 +385,9 @@ sub scan_form_urlencoded {
     return \%param;
 }
 
-sub scan_cookie {
-    my($self, $raw_cookie) = @_;
+sub get_request_cookie {
+    my($self, @arg) = @_;
+    my $raw_cookie = $self->env->{'HTTP_COOKIE'} || q{};
     my %cookie;
     for my $pair (split /[;]\x20*/msx, $raw_cookie) {
         my @pair = split /=/msx, $pair, 2;
@@ -416,7 +397,16 @@ sub scan_cookie {
         } @pair;
         unshift @{$cookie{$k}}, $v;
     }
-    return \%cookie;
+    return \%cookie if ! @arg;
+    my $name = shift @arg;
+    return if ! exists $cookie{$name};
+    if (wantarray) {
+        return @{$cookie{$name}};
+    }
+    else {
+        return if @{$cookie{$name}} != 1;
+        return $cookie{$name}[0];
+    }
 }
 
 sub check {
@@ -493,28 +483,36 @@ sub signout {
     return;
 }
 
-package ProtectedPage;
-use strict;
-use warnings;
-use parent qw(-norequire WebResponder);
-
-sub request_session_id {
-    my($self) = @_;
-    my $raw_cookie = $self->env->{'HTTP_COOKIE'} || q{};
-    my $cookie = $self->scan_cookie($raw_cookie);
-    return if ! exists $cookie->{'ssid'} || @{$cookie->{'ssid'}} != 1;
-    my $ssid = $cookie->{'ssid'}[0];
-    $ssid = defined $ssid ? $ssid : q{};
-    return if $ssid !~ m/\A[a-zA-Z0-9_-]{1,64}\z/msx;
-    return $ssid;
-}
-
-package TopPageUser;
+package TopPage;
 use strict;
 use warnings;
 use Carp;
 use Encode;
-use parent qw(-norequire ProtectedPage);
+use parent qw(-norequire WebResponder);
+
+sub redirect {
+    my($self, @arg) = @_;
+    $self->response->redirect(q{/});
+    return $self;
+}
+
+sub get {
+    my($self) = @_;
+    if (my $ssid = $self->get_request_cookie('ssid')) {
+        my $session = UserSession->find($ssid)->[0];
+        if ($session) {
+            return $self->forward('TopPage::SignedIn')->rendar($session);
+        }
+    }
+    return $self->forward('TopPage::SignedOut')->rendar;
+}
+
+package TopPage::SignedIn;
+use strict;
+use warnings;
+use Carp;
+use Encode;
+use parent qw(-norequire WebResponder);
 
 sub rendar {
     my($self, $session) = @_;
@@ -541,12 +539,21 @@ XHTML
     return $self;
 }
 
-package TopPage;
+sub redirect {
+    my($self, $session) = @_;
+    $self->response->redirect(q{/});
+    $self->response->cookie('ssid' => {
+        'value' => $session->session_id,
+    });
+    return $self;
+}
+
+package TopPage::SignedOut;
 use strict;
 use warnings;
 use Carp;
 use Encode;
-use parent qw(-norequire ProtectedPage);
+use parent qw(-norequire WebResponder);
 
 sub rendar {
     my($self) = @_;
@@ -573,40 +580,20 @@ XHTML
 }
 
 sub redirect {
-    my($self, @arg) = @_;
-    $self->response->redirect(q{/});
-    return $self if ! @arg;
-    my($session) = @arg;
-    if (ref $session) {
-        $self->response->cookie('ssid' => {
-            'value' => $session->session_id,
-        });
-    }
-    else {
-        $self->response->cookie('ssid' => {
-            'value' => q{},
-            'expires' => 978307200, # 1-Jan-2001 00:00:00 GMT
-        });
-    }
-    return $self;
-}
-
-sub get {
     my($self) = @_;
-    if (my $ssid = $self->request_session_id) {
-        my $session = UserSession->find($ssid)->[0];
-        if ($session) {
-            return $self->forward('TopPageUser')->rendar($session);
-        }
-    }
-    return $self->rendar;
+    $self->response->redirect(q{/});
+    $self->response->cookie('ssid' => {
+        'value' => q{},
+        'expires' => 978307200, # 1-Jan-2001 00:00:00 GMT
+    });
+    return $self;
 }
 
 package SigninPage;
 use strict;
 use warnings;
 use Encode;
-use parent qw(-norequire ProtectedPage);
+use parent qw(-norequire WebResponder);
 
 sub method_not_allowed {
     my($self) = @_;
@@ -648,7 +635,7 @@ sub redirect {
 
 sub get {
     my($self) = @_;
-    my $ssid = $self->request_session_id;
+    my $ssid = $self->get_request_cookie('ssid');
     if ($ssid && UserSession->find($ssid)->[0]) {
         return $self->forward('TopPage')->redirect;
     }
@@ -657,7 +644,7 @@ sub get {
 
 sub post {
     my($self) = @_;
-    my $ssid = $self->request_session_id;
+    my $ssid = $self->get_request_cookie('ssid');
     if ($ssid && UserSession->find($ssid)->[0]) {
         return $self->forward('TopPage')->redirect;
     }
@@ -666,16 +653,15 @@ sub post {
     my $length = $env->{'CONTENT_LENGTH'} or return $self->bad_request();
     $length < 4096 or return $self->bad_request();
     read $fh, my($data), $length;
-    my $param = $self->check(
-        $self->scan_form_urlencoded($data), {
-            'signin' => ['FLAG', 'NOT NULL'],
-            'username' => ['SCALAR', 'NOT NULL', qr/\A[a-zA-Z0-9_-]{1,64}\z/msx],
-            'password' => ['SCALAR', 'NOT NULL', qr/\A[\x20-\x7e]{8,80}\z/msx],
+    my $param = $self->check($self->scan_formdata($data), {
+        'signin' => ['FLAG', 'NOT NULL'],
+        'username' => ['SCALAR', 'NOT NULL', qr/\A[a-zA-Z0-9_-]{1,64}\z/msx],
+        'password' => ['SCALAR', 'NOT NULL', qr/\A[\x20-\x7e]{8,80}\z/msx],
     }) or return $self->rendar;
     my $username = $param->{'username'}[0];
     my $password = $param->{'password'}[0];
     if (my $session = UserSession->signin($username, $password)) {
-        return $self->forward('TopPage')->redirect($session);
+        return $self->forward('TopPage::SignedIn')->redirect($session);
     }
     return $self->rendar;
 }
@@ -683,14 +669,14 @@ sub post {
 package SignoutPage;
 use strict;
 use warnings;
-use parent qw(-norequire ProtectedPage);
+use parent qw(-norequire WebResponder);
 
 sub get {
     my($self) = @_;
-    my $ssid = $self->request_session_id;
+    my $ssid = $self->get_request_cookie('ssid');
     if ($ssid && UserSession->find($ssid)->[0]) {
         UserSession->signout($ssid);
-        return $self->forward('TopPage')->redirect(undef);
+        return $self->forward('TopPage::SignedOut')->redirect;
     }
     return $self->forward('TopPage')->redirect;
 }
@@ -699,11 +685,11 @@ package DemoApplication;
 use strict;
 use warnings;
 
-my $application = WebResponder->psgi_application(
+my $application = WebResponder->psgi_application([
     '/' => 'TopPage',
     '/signin' => 'SigninPage',
     '/signout' => 'SignoutPage',
-);
+]);
 
 __END__
 
@@ -763,7 +749,7 @@ DemoApplication - demonstration for PSGI application of Test::XmlServer
 
 =item C<< $webresponse->finalize_cookie >>
 
-=item C<< WebResponder->psgi_application >>
+=item C<< WebResponder->psgi_application(\@controller) >>
 
 =item C<< $webresponder->env([$env]) >>
 
@@ -779,9 +765,9 @@ DemoApplication - demonstration for PSGI application of Test::XmlServer
 
 =item C<< $webresponder->internal_server_error >>
 
-=item C<< $webresponder->scan_form_urlencoded($string) >>
+=item C<< $webresponder->scan_formdata($string) >>
 
-=item C<< $webresponder->scan_cookie($string) >>
+=item C<< $webresponder->get_request_cookie($string, [$name]) >>
 
 =item C<< $webresponder->check(\%param, \%constraint) >>
 
@@ -795,13 +781,17 @@ DemoApplication - demonstration for PSGI application of Test::XmlServer
 
 =item C<< $protectedpage->request_session_id >>
 
-=item C<< $toppageuser->rendar >>
-
-=item C<< $toppage->rendar >>
-
-=item C<< $toppage->redirect([$session]) >>
+=item C<< $toppage->redirect >>
 
 =item C<< $toppage->get >>
+
+=item C<< $toppage_signedin->rendar($session) >>
+
+=item C<< $toppage_signedin->redirect($session) >>
+
+=item C<< $toppage_signedout->rendar >>
+
+=item C<< $toppage_signedout->redirect >>
 
 =item C<< $signinpage->method_not_allowed >>
 

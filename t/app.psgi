@@ -333,6 +333,10 @@ sub component {
     my($class, @attr_list) = @{$dependency};
     return \@attr_list if $class eq 'ARRAY';
     return +{@attr_list} if $class eq 'HASH';
+    if (! eval{ $class->can('new') }) {
+        eval "require $class;"; ## no critic qw(StringyEval)
+        die $@ if $@;
+    }
     my $obj = $class->new;
     for (0 .. -1 + int @attr_list / 2) {
         my $i = $_ * 2;

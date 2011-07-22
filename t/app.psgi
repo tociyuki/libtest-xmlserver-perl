@@ -83,7 +83,7 @@ use Encode;
 use Carp;
 use parent qw(-norequire WebComponent);
 
-__PACKAGE__->mk_accessors('code', 'body', 'controller');
+__PACKAGE__->mk_accessors('code', 'body', 'responder_class');
 
 sub content_type   { return shift->header('Content-Type' => @_) }
 sub content_length { return shift->header('Content-Length' => @_) }
@@ -162,7 +162,7 @@ sub finalize {
     my($self, $env) = @_;
     if (! $self->code) {
         $env->{'psgi.error'}->print("No status code\n");
-        my $responder = $self->controller->new(
+        my $responder = $self->responder_class->new(
             'env' => $env,
             'response' => $self,
         );
@@ -243,7 +243,10 @@ use Encode;
 use Carp;
 use parent qw(-norequire WebComponent);
 
-__PACKAGE__->mk_accessors('env', 'response');
+__PACKAGE__->mk_accessors(
+    qw(env response dependency location template_path),
+    qw(controller session_controller),
+);
 
 my %METHODS = (
     'HEAD' => 'get',
@@ -254,13 +257,20 @@ my %METHODS = (
 );
 
 sub psgi_application {
-    my($class, $controller_list) = @_;
+    my($class, $responder_list, $dependency) = @_;
     return sub{
         my($env) = @_;
         my $responder = $class->new(
             'env' => $env,
-            'response' => WebResponse->new('controller' => $class),
+            'response' => WebResponse->new('responder_class' => $class),
+            'dependency' => $dependency,
         );
+        for my $attribute (qw(controller session_controller)) {
+            my $name = ":$attribute";
+            if (exists $dependency->{$name}) {
+                $responder->$attribute($responder->component($name));
+            }
+        }
         $responder->response->content_type('text/html; charset=utf-8');
         # based on Try::Tiny
         if (eval{
@@ -268,20 +278,20 @@ sub psgi_application {
             my $method = $METHODS{$env->{'REQUEST_METHOD'} || 'UNKOWN'};
             $method ||= 'method_not_allowed';
             $responder->not_found;
-            for (0 .. -1 + int @{$controller_list} / 2) {
-                my $pattern = $controller_list->[$_ * 2];
-                my $controller = $controller_list->[$_ * 2 + 1];
+            for (0 .. -1 + int @{$responder_list} / 2) {
+                my $pattern = $responder_list->[$_ * 2];
+                my $name = $responder_list->[$_ * 2 + 1];
+                my $page_responder = $responder->forward($name);
                 if (my @param = $path =~ m{\A$pattern\z}msx) {
                     if ($#- < 1) {
                         @param = ();
                     }
-                    if (! $controller->can($method)) {
+                    if (! $page_responder->can($method)) {
                         $method = 'method_not_allowed';
                     }
-                    $responder = $responder->forward($controller);
-                    $responder->response->code(200);
-                    $responder->response->body(undef);
-                    $responder = $responder->$method(@param);
+                    $page_responder->response->code(200);
+                    $page_responder->response->body(undef);
+                    $responder = $page_responder->$method(@param);
                     last;
                 }
             }
@@ -301,11 +311,37 @@ sub psgi_application {
 }
 
 sub forward {
-    my($self, $other) = @_;
-    return $other->new(
-        'env' => $self->env,
-        'response' => $self->response->replace('controller' => $other),
-    );
+    my($self, $name) = @_;
+    my $responder = $self->component($name);
+    $responder->env($self->env);
+    $responder->response($self->response);
+    $responder->response->responder_class(ref $responder);
+    $responder->dependency($self->dependency);
+    $responder->controller($self->controller);
+    $responder->session_controller($self->session_controller);
+    return $responder;
+}
+
+sub component {
+    my($self, $name) = @_;
+    return $name->() if ref $name eq 'CODE';
+    return $name if ! defined $name || ref $name;
+    my $dict = $self->dependency || {};
+    return $name if ! exists $dict->{$name};
+    my $dependency = $dict->{$name};
+    return $dependency if ref $dependency ne 'ARRAY';
+    my($class, @attr_list) = @{$dependency};
+    return \@attr_list if $class eq 'ARRAY';
+    return +{@attr_list} if $class eq 'HASH';
+    my $obj = $class->new;
+    for (0 .. -1 + int @attr_list / 2) {
+        my $i = $_ * 2;
+        my($attr, $value) = @attr_list[$i, $i + 1];
+        eval{ $obj->can($attr) }
+            or croak "class $class cannot $attr.";
+        $obj->$attr($self->component($value));
+    }
+    return $obj;
 }
 
 sub bad_request {
@@ -427,6 +463,40 @@ sub check {
     return $hash_array;
 }
 
+{
+    package WebResponder::Template;
+    use strict;
+    use warnings;
+    use Carp;
+    use Encode;
+
+    my $MTIME = 9;
+
+    my %_content;
+    my %_mtime;
+
+    sub get {
+        my($class, $name) = @_;
+        if (! exists $_content{$name}
+            || (stat $name)[$MTIME] > $_mtime{$name}
+        ) {
+            $_content{$name} = decode('UTF-8', _read_file($name));
+            $_mtime{$name} = time;
+        }
+        return $_content{$name};
+    }
+
+    sub _read_file {
+        my($filename) = @_;
+        open my($fh), '<', $filename or croak "cannot open '$filename' : $!";
+        binmode $fh;
+        local $/ = undef;
+        my $body = <$fh>;
+        close $fh or croak "cannot close '$filename' : $!";
+        return $body;
+    }
+}
+
 package UserSession;
 use strict;
 use warnings;
@@ -483,6 +553,49 @@ sub signout {
     return;
 }
 
+package SessionController;
+use strict;
+use warnings;
+use Carp;
+use parent qw(-norequire WebComponent);
+
+__PACKAGE__->mk_accessors(qw(name content selection));
+
+sub signin {
+    my($self, $username, $password) = @_;
+    return $self->selection($self->content->signin($username, $password));
+}
+
+sub signout {
+    my($self) = @_;
+    my $session = $self->selection or return;
+    $self->content->signout($session->session_id);
+    return $self->selection(undef);
+}
+
+sub sync_agent {
+    my($self, $responder) = @_;
+    my $ssid = $responder->get_request_cookie($self->name) or return;
+    return $self->selection($self->content->find($ssid)->[0]);
+}
+
+sub set_agent {
+    my($self, $responder) = @_;
+    $responder->response->cookie(
+        $self->name => {'value' => $self->selection->session_id},
+    );
+    return $responder;
+}
+
+sub unset_agent {
+    my($self, $responder) = @_;
+    $responder->response->cookie($self->name => {
+        'value' => q{},
+        'expires' => 978307200, # 1-Jan-2001 00:00:00 GMT
+    });
+    return $responder;
+}
+
 package TopPage;
 use strict;
 use warnings;
@@ -492,19 +605,18 @@ use parent qw(-norequire WebResponder);
 
 sub redirect {
     my($self, @arg) = @_;
-    $self->response->redirect(q{/});
+    $self->response->redirect($self->location);
     return $self;
 }
 
 sub get {
     my($self) = @_;
-    if (my $ssid = $self->get_request_cookie('ssid')) {
-        my $session = UserSession->find($ssid)->[0];
-        if ($session) {
-            return $self->forward('TopPage::SignedIn')->rendar($session);
-        }
+    if ($self->session_controller->sync_agent($self)) {
+        return $self->forward(':TopPage-SignedIn')->rendar;
     }
-    return $self->forward('TopPage::SignedOut')->rendar;
+    else {
+        return $self->forward(':TopPage-SignedOut')->rendar;
+    }
 }
 
 package TopPage::SignedIn;
@@ -515,36 +627,20 @@ use Encode;
 use parent qw(-norequire WebResponder);
 
 sub rendar {
-    my($self, $session) = @_;
-    my $username = $self->escape_text($session->user_name);
-    use utf8;
-    my $body = <<"XHTML";
-<!DOCTYPE html>
-<html>
-<head>
-<meta encoding="utf-8" />
-<title>Example</title>
-</head>
-<body>
-<h1>Example</h1>
-<h2>TopPage</h2>
-<ul>
-<li>Welcome to <span class="username" title="$username">$username</span></li>
-<li><a href="/signout">sign out</a></li>
-</ul>
-</body>
-</html>
-XHTML
+    my($self) = @_;
+    my $body = WebResponder::Template->get($self->template_path);
+    my $username = $self->escape_text(
+        $self->session_controller->selection->user_name,
+    );
+    $body =~ s/{\$username}/$username/gmsx;
     $self->response->body($body);
     return $self;
 }
 
 sub redirect {
-    my($self, $session) = @_;
-    $self->response->redirect(q{/});
-    $self->response->cookie('ssid' => {
-        'value' => $session->session_id,
-    });
+    my($self) = @_;
+    $self->response->redirect($self->location);
+    $self->session_controller->set_agent($self);
     return $self;
 }
 
@@ -557,35 +653,15 @@ use parent qw(-norequire WebResponder);
 
 sub rendar {
     my($self) = @_;
-    use utf8;
-    my $body = <<'XHTML';
-<!DOCTYPE html>
-<html>
-<head>
-<meta encoding="utf-8" />
-<title>Example</title>
-</head>
-<body>
-<h1>Example</h1>
-<h2>TopPage</h2>
-<ul>
-<li>Welcome to <span class="username" title="guest">guest</span></li>
-<li><a href="/signin">sign in</a></li>
-</ul>
-</body>
-</html>
-XHTML
+    my $body = WebResponder::Template->get($self->template_path);
     $self->response->body($body);
     return $self;
 }
 
 sub redirect {
     my($self) = @_;
-    $self->response->redirect(q{/});
-    $self->response->cookie('ssid' => {
-        'value' => q{},
-        'expires' => 978307200, # 1-Jan-2001 00:00:00 GMT
-    });
+    $self->response->redirect($self->location);
+    $self->session_controller->unset_agent($self);
     return $self;
 }
 
@@ -595,6 +671,14 @@ use warnings;
 use Encode;
 use parent qw(-norequire WebResponder);
 
+sub form_constraint {
+    return +{
+        'signin' => ['FLAG', 'NOT NULL'],
+        'username' => ['SCALAR', 'NOT NULL', qr/\A[a-zA-Z0-9_-]{1,64}\z/msx],
+        'password' => ['SCALAR', 'NOT NULL', qr/\A[\x20-\x7e]{8,80}\z/msx],
+    };
+}
+
 sub method_not_allowed {
     my($self) = @_;
     return $self->SUPER::method_not_allowed('GET,HEAD,POST');
@@ -602,68 +686,36 @@ sub method_not_allowed {
 
 sub rendar {
     my($self) = @_;
-    use utf8;
-    my $body = <<'XHTML';
-<!DOCTYPE html>
-<html>
-<head>
-<meta encoding="utf-8" />
-<title>サインイン - Example</title>
-</head>
-<body>
-<h1>Example</h1>
-<h2>サインイン</h2>
-<form id="signin" action="/signin" method="POST">
-<table>
-<tr><th>ユーザ名</th><td><input type="text" name="username" /></td></tr>
-<tr><th>パスワード</th><td><input type="password" name="password" /></td></tr>
-<tr><td style="text-align: right" colspan="2"><input type="submit" name="signin" value=" サインイン " /></td></tr>
-</table>
-</form>
-</body>
-</html>
-XHTML
+    my $body = WebResponder::Template->get($self->template_path);
     $self->response->body($body);
-    return $self;
-}
-
-sub redirect {
-    my($self) = @_;
-    $self->response->redirect('/signin');
     return $self;
 }
 
 sub get {
     my($self) = @_;
-    my $ssid = $self->get_request_cookie('ssid');
-    if ($ssid && UserSession->find($ssid)->[0]) {
-        return $self->forward('TopPage')->redirect;
+    if ($self->session_controller->sync_agent($self)) {
+        return $self->forward(':TopPage')->redirect;
     }
     return $self->rendar;
 }
 
 sub post {
     my($self) = @_;
-    my $ssid = $self->get_request_cookie('ssid');
-    if ($ssid && UserSession->find($ssid)->[0]) {
-        return $self->forward('TopPage')->redirect;
+    if ($self->session_controller->sync_agent($self)) {
+        return $self->forward(':TopPage')->redirect;
     }
     my $env = $self->env;
     my $fh = $env->{'psgi.input'};
     my $length = $env->{'CONTENT_LENGTH'} or return $self->bad_request();
     $length < 4096 or return $self->bad_request();
     read $fh, my($data), $length;
-    my $param = $self->check($self->scan_formdata($data), {
-        'signin' => ['FLAG', 'NOT NULL'],
-        'username' => ['SCALAR', 'NOT NULL', qr/\A[a-zA-Z0-9_-]{1,64}\z/msx],
-        'password' => ['SCALAR', 'NOT NULL', qr/\A[\x20-\x7e]{8,80}\z/msx],
-    }) or return $self->rendar;
-    my $username = $param->{'username'}[0];
-    my $password = $param->{'password'}[0];
-    if (my $session = UserSession->signin($username, $password)) {
-        return $self->forward('TopPage::SignedIn')->redirect($session);
-    }
-    return $self->rendar;
+    my $form = $self->check(
+        $self->scan_formdata($data), $self->form_constraint,
+    ) or return $self->rendar;
+    my $session = $self->session_controller->signin(
+        $form->{'username'}[0], $form->{'password'}[0],
+    ) or return $self->rendar;
+    return $self->forward(':TopPage-SignedIn')->redirect;
 }
 
 package SignoutPage;
@@ -673,23 +725,50 @@ use parent qw(-norequire WebResponder);
 
 sub get {
     my($self) = @_;
-    my $ssid = $self->get_request_cookie('ssid');
-    if ($ssid && UserSession->find($ssid)->[0]) {
-        UserSession->signout($ssid);
-        return $self->forward('TopPage::SignedOut')->redirect;
+    if (! $self->session_controller->sync_agent($self)) {
+        return $self->forward(':TopPage')->redirect;
     }
-    return $self->forward('TopPage')->redirect;
+    $self->session_controller->signout;
+    return $self->forward(':TopPage-SignedOut')->redirect;
 }
 
 package DemoApplication;
 use strict;
 use warnings;
 
+my $dependency = {
+    ':TOPPAGE_LOCATION' => '/',
+
+    ':session_controller' => ['SessionController',
+        'name' => 'ssid',
+        'content' => 'UserSession',
+    ],
+
+    ':TopPage' => ['TopPage',
+        'location' => ':TOPPAGE_LOCATION',
+    ],
+    ':TopPage-SignedIn' => ['TopPage::SignedIn',
+        'location' => ':TOPPAGE_LOCATION',
+        'template_path' => 't/template/toppage-signedin.html',
+    ],
+    ':TopPage-SignedOut' => ['TopPage::SignedOut',
+        'location' => ':TOPPAGE_LOCATION',
+        'template_path' => 't/template/toppage-signedout.html'
+    ],
+    ':SigninPage' => ['SigninPage',
+        'location' => '/signin',
+        'template_path' => 't/template/signin.html'
+    ],
+    ':SignoutPage' => ['SignoutPage',
+        'location' => '/signout',
+    ],
+};
+
 my $application = WebResponder->psgi_application([
-    '/' => 'TopPage',
-    '/signin' => 'SigninPage',
-    '/signout' => 'SignoutPage',
-]);
+    '/' => ':TopPage',
+    '/signin' => ':SigninPage',
+    '/signout' => ':SignoutPage',
+], $dependency);
 
 __END__
 
@@ -755,7 +834,19 @@ DemoApplication - demonstration for PSGI application of Test::XmlServer
 
 =item C<< $webresponder->response([$response]) >>
 
-=item C<< $webresponder->forward($other_class) >>
+=item C<< $webresponder->dependency([$dependency]) >>
+
+=item C<< $webresponder->location([$location]) >>
+
+=item C<< $webresponder->template_path([$template_path]) >>
+
+=item C<< $webresponder->controller([$controller]) >>
+
+=item C<< $webresponder->session_controller([$session_controller]) >>
+
+=item C<< $webresponder->forward($component_name) >>
+
+=item C<< $webresponder->component($component_name) >>
 
 =item C<< $webresponder->bad_request >>
 
@@ -771,6 +862,8 @@ DemoApplication - demonstration for PSGI application of Test::XmlServer
 
 =item C<< $webresponder->check(\%param, \%constraint) >>
 
+=item C<< $webresponder_template->get($template_name) >>
+
 =item C<< UserSession->new_mock(%init_value) >>
 
 =item C<< UserSession->find($session_id) >>
@@ -779,7 +872,23 @@ DemoApplication - demonstration for PSGI application of Test::XmlServer
 
 =item C<< UserSession->signout($session_id) >>
 
-=item C<< $protectedpage->request_session_id >>
+=item C<< $session_controller->name >>
+
+Name of session cookie.
+
+=item C<< $session_controller->content >>
+
+=item C<< $session_controller->selection >>
+
+=item C<< $session_controller->signin($username, $password) >>
+
+=item C<< $session_controller->signout >>
+
+=item C<< $session_controller->sync_agent($responder) >>
+
+=item C<< $session_controller->set_agent($responder) >>
+
+=item C<< $session_controller->unset_agent($responder) >>
 
 =item C<< $toppage->redirect >>
 
@@ -796,8 +905,6 @@ DemoApplication - demonstration for PSGI application of Test::XmlServer
 =item C<< $signinpage->method_not_allowed >>
 
 =item C<< $signinpage->rendar >>
-
-=item C<< $signinpage->redirect >>
 
 =item C<< $signinpage->get >>
 

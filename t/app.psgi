@@ -161,7 +161,7 @@ sub cookie {
 sub finalize {
     my($self, $env) = @_;
     if (! $self->code) {
-        $env->{'psgi.error'}->print("No status code\n");
+        $env->{'psgi.errors'}->print("No status code\n");
         my $responder = $self->responder_class->new(
             'env' => $env,
             'response' => $self,
@@ -244,7 +244,7 @@ use Carp;
 use parent qw(-norequire WebComponent);
 
 __PACKAGE__->mk_accessors(
-    qw(env response dependency location template_path),
+    qw(env response dependency location template_path template_store),
     qw(controller session_controller),
 );
 
@@ -464,7 +464,7 @@ sub check {
 }
 
 {
-    package WebResponder::Template;
+    package WebResponder::StoreFs;
     use strict;
     use warnings;
     use Carp;
@@ -475,7 +475,7 @@ sub check {
     my %_content;
     my %_mtime;
 
-    sub get {
+    sub fetch {
         my($class, $name) = @_;
         if (! exists $_content{$name}
             || (stat $name)[$MTIME] > $_mtime{$name}
@@ -628,7 +628,7 @@ use parent qw(-norequire WebResponder);
 
 sub rendar {
     my($self) = @_;
-    my $body = WebResponder::Template->get($self->template_path);
+    my $body = $self->template_store->fetch($self->template_path);
     my $username = $self->escape_text(
         $self->session_controller->selection->user_name,
     );
@@ -653,7 +653,7 @@ use parent qw(-norequire WebResponder);
 
 sub rendar {
     my($self) = @_;
-    my $body = WebResponder::Template->get($self->template_path);
+    my $body = $self->template_store->fetch($self->template_path);
     $self->response->body($body);
     return $self;
 }
@@ -686,7 +686,7 @@ sub method_not_allowed {
 
 sub rendar {
     my($self) = @_;
-    my $body = WebResponder::Template->get($self->template_path);
+    my $body = $self->template_store->fetch($self->template_path);
     $self->response->body($body);
     return $self;
 }
@@ -750,14 +750,17 @@ my $dependency = {
     ':TopPage-SignedIn' => ['TopPage::SignedIn',
         'location' => ':TOPPAGE_LOCATION',
         'template_path' => 't/template/toppage-signedin.html',
+        'template_store' => 'WebResponder::StoreFs',
     ],
     ':TopPage-SignedOut' => ['TopPage::SignedOut',
         'location' => ':TOPPAGE_LOCATION',
-        'template_path' => 't/template/toppage-signedout.html'
+        'template_path' => 't/template/toppage-signedout.html',
+        'template_store' => 'WebResponder::StoreFs',
     ],
     ':SigninPage' => ['SigninPage',
         'location' => '/signin',
-        'template_path' => 't/template/signin.html'
+        'template_path' => 't/template/signin.html',
+        'template_store' => 'WebResponder::StoreFs',
     ],
     ':SignoutPage' => ['SignoutPage',
         'location' => '/signout',
@@ -840,6 +843,8 @@ DemoApplication - demonstration for PSGI application of Test::XmlServer
 
 =item C<< $webresponder->template_path([$template_path]) >>
 
+=item C<< $webresponder->template_store([$template_store]) >>
+
 =item C<< $webresponder->controller([$controller]) >>
 
 =item C<< $webresponder->session_controller([$session_controller]) >>
@@ -862,7 +867,9 @@ DemoApplication - demonstration for PSGI application of Test::XmlServer
 
 =item C<< $webresponder->check(\%param, \%constraint) >>
 
-=item C<< $webresponder_template->get($template_name) >>
+=item C<< $webresponder_storefs->fetch($key) >>
+
+Fetchs from the local file system as a Key-Value store.
 
 =item C<< UserSession->new_mock(%init_value) >>
 

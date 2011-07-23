@@ -1,5 +1,8 @@
 Revision history for Test-XmlServer
 
+0.003  Sat Jul 23 05:51:39 2011 GMT
+    + enables to post multipart/form-data, but not yet implement uploading files.
+
 0.002  Wed Jul 20 13:06:27 2011 GMT
     ! using request formdata hashref to arrayref.
 

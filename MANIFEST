@@ -10,7 +10,12 @@ t/01.xmlserver.t
 t/02.commondata.t
 t/03.document.t
 t/04.application.t
+t/05.multipart.t
 t/app.psgi
+t/template/toppage-signedin.html
+t/template/toppage-signedout.html
+t/template/signin.html
 t/perlcritic.t
+t/perlcriticrc
 t/pod-coverage.t
 t/pod.t

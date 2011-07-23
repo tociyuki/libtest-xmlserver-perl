@@ -4,7 +4,7 @@ use warnings;
 use Encode ();
 
 # $Id$
-use version; our $VERSION = '0.001';
+use version; our $VERSION = '0.002';
 
 __PACKAGE__->_mk_attributes(
     \&_scalar_accessor => qw(method path_info code body),
@@ -55,6 +55,22 @@ sub formdata {
         push @q, map { $ek . q{=} . _encode_uri($_) } $self->param($k);
     }
     return join q{&}, @q;
+}
+
+sub multipart_formdata {
+    my($self, $boundary) = @_;
+    my $body = q{};
+    for my $k (sort $self->param) {
+        my $ek = _encode_uri($k);
+        for my $value ($self->param($k)) {
+            $body .=
+                  qq{--$boundary\x0d\x0a}
+                . qq{Content-Disposition: form-data; name="$ek"\x0d\x0a}
+                . qq{\x0d\x0a}
+                . $value . qq{\x0d\x0a};
+        }
+    }
+    return $body . qq{--$boundary--\x0d\x0a};
 }
 
 sub _encode_uri {
@@ -120,7 +136,7 @@ Test::XmlServer::CommonData - Prepared request, response, and expected data.
 
 =head1 VERSION
 
-0.001
+0.002
 
 =head1 SYNOPSIS
 
@@ -140,6 +156,10 @@ Test::XmlServer::CommonData - Prepared request, response, and expected data.
 =item C<< formdata >>
 
 Creates application/x-www-form-urlencoded formdata text.
+
+=item C<< multipart_formdata($boundary) >>
+
+Creates multipart/form-data text.
 
 =item C<< method([$REQUEST_METHOD]) >>
 

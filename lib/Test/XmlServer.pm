@@ -5,7 +5,7 @@ use Test::XmlServer::CommonData;
 use Test::XmlServer::Document;
 
 # $Id$
-use version; our $VERSION = '0.002';
+use version; our $VERSION = '0.003';
 
 sub request { return shift->{'request'} }
 sub expected { return shift->{'expected'} }
@@ -34,9 +34,18 @@ sub new {
 sub run {
     my($self, $application) = @_;
     my $env = $self->_prepare_env;
-    my $formdata = $self->request->formdata;
     if ($env->{'REQUEST_METHOD'} eq 'POST') {
-        $env->{'CONTENT_TYPE'} = 'application/x-www-form-urlencoded';
+        my $formdata;
+        $env->{'CONTENT_TYPE'} ||= 'application/x-www-form-urlencoded';
+        if ($env->{'CONTENT_TYPE'} eq 'application/x-www-form-urlencoded') {
+            $formdata = $self->request->formdata;
+        }
+        elsif ($env->{'CONTENT_TYPE'} eq 'multipart/form-data') {
+            my @c = ('A'..'Z', 'a'..'z', '0'..'9');
+            my $boundary = join q{}, map { $c[rand @c] } 1 .. 64;
+            $formdata = $self->request->multipart_formdata($boundary);
+            $env->{'CONTENT_TYPE'} .= qq{; boundary=$boundary};
+        }
         $env->{'CONTENT_LENGTH'} = length $formdata;
         open my($inputh), '<', \$formdata;
         $env->{'psgi.input'} = $inputh;
@@ -44,8 +53,11 @@ sub run {
         close $inputh;
         return $self;
     }
-    elsif ($formdata ne q{}) {
-        $env->{'QUERY_STRING'} = $formdata;
+    else {
+        my $formdata = $self->request->formdata;
+        if ($formdata ne q{}) {
+            $env->{'QUERY_STRING'} = $formdata;
+        }
     }
     $self->_finalize_response($application->($env));
     return $self;
@@ -113,7 +125,7 @@ Test::XmlServer - easy to test your PSGI Application responding XHTML.
 
 =head1 VERSION
 
-0.002
+0.003
 
 =head1 SYNOPSIS
 
@@ -174,7 +186,10 @@ Test::XmlServer - easy to test your PSGI Application responding XHTML.
     --- request
     [
         'POST', '/signin',
-        [],
+        [
+            # turn on enctype="multipart/form-data"
+            'Content-Type' => 'multipart/form-data',
+        ],
         [
             'username' => 'bob',
             'password' => 'bob!password',

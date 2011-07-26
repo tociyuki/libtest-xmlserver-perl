@@ -61,7 +61,9 @@ __END__
 --- request
 [
     'POST', '/signin',
-    [],
+    [
+        'Content-Type' => 'multipart/form-data',
+    ],
     [
         'username' => 'alice',
         'password' => 'sa^6Xwr_Ukej!dj2P',
@@ -82,7 +84,9 @@ __END__
 --- request
 [
     'POST', '/signin',
-    [],
+    [
+        'Content-Type' => 'multipart/form-data',
+    ],
     [
         'username' => 'alice',
         'password' => 'alice!inval_password',
@@ -133,7 +137,10 @@ __END__
 --- request
 [
     'POST', '/signin',
-    ['Cookie' => 'ssid=Rr6Mq4gA1u93KXrHXDuNfFfclFcS5eB9'],
+    [
+        'Cookie' => 'ssid=Rr6Mq4gA1u93KXrHXDuNfFfclFcS5eB9',
+        'Content-Type' => 'multipart/form-data',
+    ],
     [
         'username' => 'alice',
         'password' => 'sa^6Xwr_Ukej!dj2P',
@@ -154,7 +161,10 @@ __END__
 --- request
 [
     'POST', '/signin',
-    ['Cookie' => 'ssid=Rr6Mq4gA1u93KXrHXDuNfFfclFcS5eB9'],
+    [
+        'Cookie' => 'ssid=Rr6Mq4gA1u93KXrHXDuNfFfclFcS5eB9',
+        'Content-Type' => 'multipart/form-data',
+    ],
     [
         'username' => 'alice',
         'password' => 'alice!inval_password',
@@ -189,7 +199,6 @@ __END__
         'span.username' => {
             'title' => 'alice',
         },
-        'a[href="/signin"]' => undef,
         'a[href="/signout"]' => {
             'href' => '/signout',
         },
@@ -214,7 +223,6 @@ __END__
         'span.username' => {
             'title' => 'guest',
         },
-        'a[href="/signout"]' => undef,
         'a[href="/signin"]' => {
             'href' => '/signin',
         },

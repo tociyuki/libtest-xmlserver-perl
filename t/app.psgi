@@ -395,6 +395,36 @@ XHTML
     return $self;
 }
 
+sub length_required {
+    my($self) = @_;
+    use utf8;
+    my $body = <<'XHTML';
+<!DOCTYPE html>
+<html>
+<head><meta encoding="utf-8" /><title>Length Required</title></head>
+<body><h1>Length Required</h1></body>
+</html>
+XHTML
+    $self->response->code(411);
+    $self->response->body($body);
+    return $self;
+}
+
+sub request_entity_too_large {
+    my($self) = @_;
+    use utf8;
+    my $body = <<'XHTML';
+<!DOCTYPE html>
+<html>
+<head><meta encoding="utf-8" /><title>Request Entity Too Large</title></head>
+<body><h1>Request Entity Too Large</h1></body>
+</html>
+XHTML
+    $self->response->code(413);
+    $self->response->body($body);
+    return $self;
+}
+
 sub internal_server_error {
     my($self) = @_;
     use utf8;
@@ -411,6 +441,24 @@ XHTML
 }
 
 sub scan_formdata {
+    my($self) = @_;
+    my $env = $self->env;
+    return +{} if $env->{'REQUEST_METHOD'} ne 'POST';
+    my $fh = $env->{'psgi.input'};
+    read $fh, my($data), $env->{'CONTENT_LENGTH'} or return +{};
+    my $content_type = $env->{'CONTENT_TYPE'};
+    if ($content_type =~ m{\Aapplication/x-www-form-urlencoded\b}msx) {
+        return $self->split_urlencoded($data);
+    }
+    elsif ($content_type =~ m{
+        \Amultipart/form-data;.*\bboundary=(?:"(.+?)"|([^;]+))
+    }msx) {
+        return $self->split_multipart_formdata($+, $data);
+    }
+    return +{};
+}
+
+sub split_urlencoded {
     my($self, $data) = @_;
     my %param;
     for my $pair (split /[&;]/msx, $data) {
@@ -421,6 +469,41 @@ sub scan_formdata {
         next if @pair != 2 || $pair[0] eq q{};
         my($k, $v) = map { $self->decode_uri($_) } @pair;
         unshift @{$param{$k}}, $v;
+    }
+    return \%param;
+}
+
+# in memory multipart/form-data splitter for small request entity.
+sub split_multipart_formdata {
+    my($self, $boundary, $multipart) = @_;
+    my %param;
+    if ($multipart =~ m/\G.*?--$boundary\x0d\x0a/gcmsx) {
+        while ($multipart =~ m{\G
+            (.*?\x0d\x0a)\x0d\x0a(.*?)\x0d\x0a--$boundary(?:\x0d\x0a|--)
+        }gcmsx) {
+            my($head, $body) = ($1, $2);
+            $head =~ s/\x0d\x0a[\x20\t]+/ /gmsx;
+            my %header;
+            while ($head =~ m/^([^:]+):[\t\x20]*([^\x0d]*?)\x0d\x0a/gmsx) {
+                $header{lc $1} = $2;
+            }
+            my $s = $header{'content-disposition'} or next;
+            my %content_disposition;
+            while ($s =~ m/\b((?:file)?name)=(?:"(.*?)"|([^;]*))/igmosx) {
+                $content_disposition{lc $1} = $+;
+            }
+            my $name = $content_disposition{'name'} or next;
+            if (exists $content_disposition{'filename'}) {
+                unshift @{$param{$name}}, +{
+                    'filename' => $content_disposition{'filename'},
+                    'header' => \%header,
+                    'body' => $body,
+                };
+            }
+            else {
+                unshift @{$param{$name}}, $body;
+            }
+        }
     }
     return \%param;
 }
@@ -509,19 +592,22 @@ use parent qw(-norequire WebComponent);
 
 __PACKAGE__->mk_accessors(qw(session_id user_id user_name user_secret));
 
-sub _validate_session_id {
+sub check_session_id {
     my($class, $s) = @_;
+    $s = defined $s ? $s : q{};
     return $s =~ m/\A[a-zA-Z0-9_-]{1,64}\z/msx;
 }
 
-sub _validate_username {
+sub check_username {
     my($class, $s) = @_;
+    $s = defined $s ? $s : q{};
     return $s =~ m/\A[a-zA-Z0-9]+(?:[-_][a-zA-Z0-9]+)*\z/msx
         && 64 >= length $s;
 }
 
-sub _validate_password {
+sub check_password {
     my($class, $s) = @_;
+    $s = defined $s ? $s : q{};
     return $s =~ m/\A[\x20-\x7e]{8,80}\z/msx;
 }
 
@@ -534,26 +620,35 @@ sub new_mock {
     );
 }
 
-sub find {
+sub validate {
+    my($self, $password) = @_;
+    $self->check_password($password) or return;
+    my $secret = $self->user_secret or return;
+    return $secret eq crypt $password, $secret;
+}
+
+sub user_find {
+    my($class, $username) = @_;
+    $class->check_username($username) or return [];
+    return [] if $username ne 'alice';
+    return [$class->new_mock];
+}
+
+sub session_find {
     my($class, $id) = @_;
-    $class->_validate_session_id($id) or return [];
+    $class->check_session_id($id) or return [];
     return [] if $id ne 'Rr6Mq4gA1u93KXrHXDuNfFfclFcS5eB9';
     return [$class->new_mock];
 }
 
-sub signin {
-    my($class, $username, $password) = @_;
-    $class->_validate_username($username) or return;
-    $class->_validate_password($password) or return;
-    my $self = $class->new_mock;
-    my $secret = $self->user_secret;
-    return if $secret ne crypt $password, $secret;
-    return $self;
+sub session_insert {
+    my($self) = @_;
+    defined $self->user_id or return;
+    return $self->new_mock;
 }
 
-sub signout {
-    my($class, $id) = @_;
-    $class->_validate_session_id($id);
+sub session_delete {
+    my($self) = @_;
     return;
 }
 
@@ -567,20 +662,24 @@ __PACKAGE__->mk_accessors(qw(name content selection));
 
 sub signin {
     my($self, $username, $password) = @_;
-    return $self->selection($self->content->signin($username, $password));
+    $self->selection(undef);
+    return if ! $self->content->check_username($username); 
+    return if ! $self->content->check_password($password); 
+    my $selection = $self->content->user_find($username)->[0] or return;
+    $selection->validate($password) or return;
+    return $self->selection($selection->session_insert);
 }
 
 sub signout {
     my($self) = @_;
     my $session = $self->selection or return;
-    $self->content->signout($session->session_id);
-    return $self->selection(undef);
+    return $self->selection($self->selection->session_delete);
 }
 
 sub sync_agent {
     my($self, $responder) = @_;
     my $ssid = $responder->get_request_cookie($self->name) or return;
-    return $self->selection($self->content->find($ssid)->[0]);
+    return $self->selection($self->content->session_find($ssid)->[0]);
 }
 
 sub set_agent {
@@ -708,14 +807,11 @@ sub post {
     if ($self->session_controller->sync_agent($self)) {
         return $self->forward(':TopPage')->redirect;
     }
-    my $env = $self->env;
-    my $fh = $env->{'psgi.input'};
-    my $length = $env->{'CONTENT_LENGTH'} or return $self->bad_request();
-    $length < 4096 or return $self->bad_request();
-    read $fh, my($data), $length;
-    my $form = $self->check(
-        $self->scan_formdata($data), $self->form_constraint,
-    ) or return $self->rendar;
+    my $length = defined $self->env->{'CONTENT_LENGTH'}
+        ? $self->env->{'CONTENT_LENGTH'} : $self->length_required;
+    $length <= 4096 or $self->request_entity_too_large;
+    my $form = $self->check($self->scan_formdata, $self->form_constraint)
+        or return $self->rendar;
     my $session = $self->session_controller->signin(
         $form->{'username'}[0], $form->{'password'}[0],
     ) or return $self->rendar;
@@ -863,9 +959,17 @@ DemoApplication - demonstration for PSGI application of Test::XmlServer
 
 =item C<< $webresponder->method_not_allowed([$allow]) >>
 
+=item C<< $webresponder->length_required >>
+
+=item C<< $webresponder->request_entity_too_large >>
+
 =item C<< $webresponder->internal_server_error >>
 
-=item C<< $webresponder->scan_formdata($string) >>
+=item C<< $webresponder->scan_formdata >>
+
+=item C<< $webresponder->split_urlencoded($string) >>
+
+=item C<< $webresponder->split_multipart_formdata($boundary, $string) >>
 
 =item C<< $webresponder->get_request_cookie($string, [$name]) >>
 

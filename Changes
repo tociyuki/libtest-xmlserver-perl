@@ -1,5 +1,9 @@
 Revision history for Test-XmlServer
 
+0.004  Tue Jul 26 03:30:17 2011 GMT
+    + enables to test not existing elements.
+    ! REQUEST_URI from SCRIPT_NAME and PATH_INFO.
+
 0.003  Sat Jul 23 05:51:39 2011 GMT
     + enables to post multipart/form-data, but not yet implement uploading files.
 

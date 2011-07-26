@@ -5,14 +5,15 @@ use Test::XmlServer::CommonData;
 use Test::XmlServer::Document;
 
 # $Id$
-use version; our $VERSION = '0.003';
+use version; our $VERSION = '0.004';
 
 sub request { return shift->{'request'} }
 sub expected { return shift->{'expected'} }
 sub response { return shift->{'response'} }
+sub script_name { return shift->{'script_name'} }
 
 sub new {
-    my($class, $block_request, $block_expected) = @_;
+    my($class, $block_request, $block_expected, $script_name) = @_;
     my $request = Test::XmlServer::CommonData->new;
     $request->method($block_request->[0]);
     if (defined $block_request->[1]) {
@@ -28,6 +29,7 @@ sub new {
         'request' => $request,
         'expected' => $expected,
         'response' => Test::XmlServer::CommonData->new,
+        'script_name' => $script_name || '/test.cgi',
     }, $class;
 }
 
@@ -77,10 +79,14 @@ sub _prepare_env {
         'SERVER_PORT' => 80,
         'SERVER_PROTOCOL' => 'HTTP/1.1',
         'REQUEST_METHOD' => $method,
-        'REQUEST_URI' => '/example.cgi/signin',
+        'REQUEST_URI' => $self->script_name,
         'PATH_INFO' => $self->request->path_info,
-        'SCRIPT_NAME' => '/example.cgi',
+        'SCRIPT_NAME' => $self->script_name,
     };
+    if (defined $env->{'PATH_INFO'}) {
+        $env->{'REQUEST_URI'}
+            .= Test::XmlServer::CommonData::_encode_uri($env->{'PATH_INFO'});
+    }
     for my $h ($self->request->header) {
         next if ! defined $self->request->header($h);
         my $header = join q{_}, map { uc } split /-/msx, $h;
@@ -103,6 +109,10 @@ sub _finalize_response {
     my $doc = Test::XmlServer::Document->new(join q{}, @{$psgi_res->[2]});
     for my $selector (keys %{$self->expected->body}) {
         my($element) = $doc->find($selector);
+        if (! defined $self->expected->body->{$selector} && ! $element) {
+            $self->response->body->{$selector} = undef;
+            next;
+        }
         $element or next;
         for my $attr (keys %{$self->expected->body->{$selector}}) {
             $self->response->body->{$selector}{$attr} = 
@@ -125,7 +135,7 @@ Test::XmlServer - easy to test your PSGI Application responding XHTML.
 
 =head1 VERSION
 
-0.003
+0.004
 
 =head1 SYNOPSIS
 
@@ -229,7 +239,7 @@ Test::XmlServer - easy to test your PSGI Application responding XHTML.
 
 =over
 
-=item C<< new($block_request, $block_expected) >>
+=item C<< new($block_request, $block_expected, [$script_name]) >>
 
 Create a test server for given Test::Base's block.
 

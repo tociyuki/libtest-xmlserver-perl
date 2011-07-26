@@ -4,7 +4,7 @@ use warnings;
 use Carp;
 
 # $Id$
-use version; our $VERSION = '0.001';
+use version; our $VERSION = '0.002';
 
 my $ID = qr{[A-Za-z_:][A-Za-z0-9_:-]*}msx;
 my $SP = qr{[\x20\t\n\r]}msx;
@@ -90,19 +90,42 @@ sub _match_selector_term {
     my($self, $selector_term) = @_;
     my $mine_tagname = $self->tagname;
     if ($selector_term =~ m{\A
-        (?:($ID) (?:\#($ID)|[.]([a-zA-Z0-9_:-]+)|\[($ID)="([^"]+)"\])?
-        |  [*]? (?:\#($ID)|[.]([a-zA-Z0-9_:-]+)|\[($ID)="([^"]+)"\])
-        )
-    \z}msxo) {
-        my($tagname, $id, $classname) = ($1, $2 || $6, $3 || $7);
-        my($attr, $value) = $id ? ('id', $id)
-            : $classname ? ('class', $classname)
-            : ($4 || $8, $5 || $9);
+        ($ID)(?:\#($ID)|[.]([a-zA-Z0-9_:-]+)|\[($ID)([~^\$*|]?=)"([^"]+)"\])?
+    |   [*]? (?:\#($ID)|[.]([a-zA-Z0-9_:-]+)|\[($ID)([~^\$*|]?=)"([^"]+)"\])
+    \z}mosx) {
+        my($tagname, $id, $classname) = ($1, $2 || $7, $3 || $8);
+        my($attr, $op, $pattern) = $id ? ('id', q{=}, $id)
+            : $classname ? ('class', q{~=}, $classname)
+            : ($4 || $9, $5 || $10, $6 || $11);
         return (! $tagname || $mine_tagname eq $tagname)
-            && (! $attr
-                || (0 <= index $self->attribute($attr) || q{}, $value));
+            && (! $attr || $self->_attribute_match($attr, $op, $pattern));
     }
     return;
+}
+
+# see http://www.w3.org/TR/css-2010/#selectors
+sub _attribute_match {
+    my($self, $attr, $op, $pattern) = @_;
+    my $value = $self->attribute($attr);
+    $value = defined $value ? $value : q{};
+    if ($op eq q{~=}) {
+        return 0 <= index " $value ", " $pattern ";
+    }
+    if ($op eq q{^=}) {
+        return $pattern eq (substr $value, 0, length $pattern);
+    }
+    if ($op eq q{$=}) {
+        my($vsize, $psize) = ((length $value), (length $pattern));
+        return $vsize >= $psize
+            && $pattern eq (substr $value, $vsize - $psize, $psize);
+    }
+    if ($op eq q{*=}) {
+        return 0 <= index $value, $pattern;
+    }
+    if ($op eq q{|=}) {
+        return 0 <= index "-$value-", "-$pattern-";
+    }
+    return $value eq $pattern;
 }
 
 sub _compose_document {
@@ -178,7 +201,7 @@ Test::XmlServer::Document - XML document tree.
 
 =head1 VERSION
 
-0.001
+0.002
 
 =head1 SYNOPSIS
 

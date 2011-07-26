@@ -3,7 +3,7 @@ use warnings;
 use Test::Base;
 use Test::XmlServer::Document;
 
-plan tests => 30;
+plan tests => 49;
 
 {
     my($it, $spec);
@@ -58,15 +58,15 @@ plan tests => 30;
   <li><a href="#ID1">TITLE1</a></li>
   <li><a href="#ID2">TITLE2</a></li>
  </ul>
- <div id="ID1" class="hentry">
+ <div id="ID1" class="hentry topic">
  <h2><a rel="bookmark" href="permalink1">TITLE1</a></h2>
  <p class="abstract">ABSTRACT1</p>
- <p>CONTENT1</p>
+ <p class="entry-body">CONTENT1</p>
  </div>
  <div id="ID2" class="hentry">
  <h2><a rel="bookmark" href="permalink2">TITLE2</a></h2>
  <p class="abstract">ABSTRACT2</p>
- <p>CONTENT2</p>
+ <p class="entry-body-2">CONTENT2</p>
  </div>
 </body>
 </html>
@@ -107,11 +107,11 @@ HTML
         my(@link) = $doc->find('a');
         is scalar @link, 4, spec;
 
-    it 'should get #ID1 from 1st element';
+    it 'should get ID1 from 1st element';
 
         is $link[0]->attribute('href'), '#ID1', spec;
 
-    it 'should get #ID2 from 2nd element';
+    it 'should get ID2 from 2nd element';
 
         is $link[1]->attribute('href'), '#ID2', spec;
 
@@ -131,12 +131,12 @@ HTML
 
         is $link[3]->attribute('rel'), 'bookmark', spec;
 
-    it 'should get #ID1 element';
+    it 'should get ID1 element';
 
         my($id1) = $doc->find('#ID1');
-        is $id1->attribute('class'), 'hentry', spec;
+        is $id1->attribute('class'), 'hentry topic', spec;
 
-    it 'should get #ID2 element';
+    it 'should get ID2 element';
 
         my($id2) = $doc->find('#ID2');
         is $id2->attribute('class'), 'hentry', spec;
@@ -154,7 +154,7 @@ HTML
 
         is $abstract[1]->child_nodes->[0], 'ABSTRACT2', spec;
 
-    it 'should get #ID1 h2 a';
+    it 'should get ID1 h2 a';
 
         my @id1h2a = $doc->find('#ID1 h2 a');
         is scalar @id1h2a, 1, spec;
@@ -175,5 +175,84 @@ HTML
     it 'should be permalink2 at 2nd bookmark';
 
         is $bookmark[1]->attribute('href'), 'permalink2', spec;
+
+    it 'should get class=hentry';
+
+        my @hentry1 = $doc->find('[class="hentry"]');
+        is scalar @hentry1, 1, spec;
+
+    it 'should be ID2 at 1st hentry';
+
+        is $hentry1[0]->attribute('id'), 'ID2', spec;
+
+    it 'should get class~=hentry';
+
+        my @hentry2 = $doc->find('[class~="hentry"]');
+        is scalar @hentry2, 2, spec;
+
+    it 'should be ID1 at 1st hentry';
+
+        is $hentry2[0]->attribute('id'), 'ID1', spec;
+
+    it 'should be ID2 at 2nd hentry';
+
+        is $hentry2[1]->attribute('id'), 'ID2', spec;
+
+    it 'should not get class~=entry';
+
+        my @hentry3 = $doc->find('[class~="entry"]');
+        is scalar @hentry3, 0, spec;
+
+    it 'should get class^=hent';
+        my @hentry4 = $doc->find('[class^="hent"]');
+        is scalar @hentry4, 2, spec;
+
+    it 'should be ID1 at 1st hentry';
+
+        is $hentry4[0]->attribute('id'), 'ID1', spec;
+
+    it 'should be ID2 at 2nd hentry';
+
+        is $hentry4[1]->attribute('id'), 'ID2', spec;
+
+    it 'should get class$=pic';
+        my @hentry5 = $doc->find('[class$="pic"]');
+        is scalar @hentry5, 1, spec;
+
+    it 'should be ID1 at 1st hentry';
+
+        is $hentry5[0]->attribute('id'), 'ID1', spec;
+
+    it 'should get class*=ent';
+        my @hentry6 = $doc->find('[class*="ent"]');
+        is scalar @hentry6, 4, spec;
+
+    it 'should be ID1 at 1st hentry';
+
+        is $hentry6[0]->attribute('id'), 'ID1', spec;
+
+    it 'should be CONTENT1 at 2nd hentry';
+
+        is $hentry6[1]->child_nodes->[0], 'CONTENT1', spec;
+
+    it 'should be ID2 at 3rd hentry';
+
+        is $hentry6[2]->attribute('id'), 'ID2', spec;
+
+    it 'should be CONTENT2 at 4th hentry';
+
+        is $hentry6[3]->child_nodes->[0], 'CONTENT2', spec;
+
+    it 'should get class|=body';
+        my @body1 = $doc->find('[class|="body"]');
+        is scalar @body1, 2, spec;
+
+    it 'should be CONTENT1 at 1st hentry';
+
+        is $body1[0]->child_nodes->[0], 'CONTENT1', spec;
+
+    it 'should be CONTENT2 at 2nd hentry';
+
+        is $body1[1]->child_nodes->[0], 'CONTENT2', spec;
 }
 

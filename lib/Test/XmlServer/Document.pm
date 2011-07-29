@@ -32,7 +32,7 @@ sub find {
         pop @path;
         my $i = pop @todo;
         my $node = pop @todo;
-         while ($i < @{$node->child_nodes || []}) {
+        while ($i < @{$node->child_nodes || []}) {
             my $child = $node->child_nodes->[$i++];
             next if ! ref $child;
             next if $child->[0][1] ne q{<};

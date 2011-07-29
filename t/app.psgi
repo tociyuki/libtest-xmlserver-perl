@@ -196,9 +196,17 @@ sub finalize {
     }
     my $response = [$self->code, [], []];
     for my $name ($self->header) {
-        push @{$response->[1]}, map {
-            ($name => join "\x0d\x0a ", split /[\r\n]+[\t\040]*/msx, $_);
-        } $self->header($name);
+        next if $name !~ m/\A[A-Za-z][A-Za-z0-9]+(?:[-][A-Za-z0-9]+)*\z/msx;
+        if (lc $name eq 'location') {
+            push @{$response->[1]}, $name, $self->encode_uri($self->header($name));
+            next;
+        }
+        for my $value ($self->header($name)) {
+            next if utf8::is_utf8($value);
+            next if $value =~ tr/\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\xff//;
+            push @{$response->[1]}, $name, 
+                join "\x0d\x0a ", split /[\r\n]+[\t\040]*/msx, $value;
+        }
     }
     if (defined $self->body) {
         $response->[2][0] = $self->body;
@@ -244,7 +252,7 @@ use Carp;
 use parent qw(-norequire WebComponent);
 
 __PACKAGE__->mk_accessors(
-    qw(env response dependency location template_path template_store),
+    qw(env response dependency location template_engine template),
     qw(controller session_controller),
 );
 
@@ -551,7 +559,7 @@ sub check {
 }
 
 {
-    package WebResponder::StoreFs;
+    package WebResponder::Template;
     use strict;
     use warnings;
     use Carp;
@@ -559,18 +567,20 @@ sub check {
 
     my $MTIME = 9;
 
-    my %_content;
+    my %_template;
     my %_mtime;
 
-    sub fetch {
-        my($class, $name) = @_;
-        if (! exists $_content{$name}
+    sub rendar {
+        my($class, $name, $h) = @_;
+        if (! exists $_template{$name}
             || (stat $name)[$MTIME] > $_mtime{$name}
         ) {
-            $_content{$name} = decode('UTF-8', _read_file($name));
+            my $src = decode('UTF-8', _read_file($name));
+            my $template = WebResponder::Template::Engine->new->parse($src);
+            $_template{$name} = $template;
             $_mtime{$name} = time;
         }
-        return $_content{$name};
+        return $_template{$name}->apply($h)->result;
     }
 
     sub _read_file {
@@ -582,6 +592,117 @@ sub check {
         close $fh or croak "cannot close '$filename' : $!";
         return $body;
     }
+}
+
+package WebResponder::Template::Engine;
+use Carp;
+use parent qw(-norequire WebComponent);
+
+__PACKAGE__->mk_accessors(qw(builder result));
+
+sub apply {
+    my($self, $h) = @_;
+    $self->result(q{});
+    $self->builder->inject($self, $h);
+    return $self;
+}
+
+sub concat {
+    my($self, $x) = @_;
+    $self->result($self->result . $x);
+    return $self;
+}
+
+sub parse {
+    my($self, $s) = @_;
+    my $p = $self->builder(WebResponder::Template::Node->new('text', q{?}));
+    my %kind = (
+        'if' => 'if', 'for' => 'for', 'text' => 'text',
+        'html' => 'xml', 'xml' => 'xml', 'uri' => 'uri', 'url' => 'url',
+        'raw' => 'raw',
+    );
+    my @stack;
+    while ($s =~ m{\G
+        (.*?)
+        (?: (\z)
+        |   \{\{\s*
+            (?: (end) \s*
+            |   (if|for) \s* ([a-z][a-z0-9]*) \s*
+            |   ([a-z][a-z0-9]*) \s* (?: \| \s* (text|html|xml|uri|uri|raw) \s*)?
+            )
+            \}\}
+        )
+    }gmsx) {
+        $p->concat($1);
+        last if $#- == 2;
+        if ($3) {
+            $p = pop @stack;
+            next;
+        }
+        my $q = WebResponder::Template::Node->new(
+            $kind{$4 || $7 || 'text'} => $5 || $6 || q{},
+        );
+        push @{$p->{tmpl}}, $q;
+        if ($4) {
+            push @stack, $p;
+            $p = $q;
+        }
+    }
+    $#stack == -1 or croak 'not blance {{ for|if x }} .. {{ end }}.';
+    return $self;
+}
+
+package WebResponder::Template::Node;
+use Carp;
+use parent qw(-norequire WebComponent);
+
+sub concat {
+    my($self, $text) = @_;
+    return $self if $text eq q{};
+    if (! @{$self->{'tmpl'}} || ref $self->{'tmpl'}[-1]) {
+        push @{$self->{'tmpl'}}, $text;
+    }
+    else {
+        $self->{'tmpl'}[-1] .= $text;
+    }
+    return $self;
+}
+
+sub new {
+    my($class, $kind, $name) = @_;
+    return bless {
+        'kind' => $kind,
+        'name' => $name,
+        'tmpl' => [],
+    }, $class;
+}
+
+sub inject {
+    my($self, $c, $h) = @_;
+    for my $x (@{$self->{'tmpl'}}) {
+        if (! ref $x){
+            $c->concat($x);
+            next;
+        }
+        my $k = $x->{'name'};
+        my $v = exists $h->{$k} ? $h->{$k} : next;
+        if (ref $v eq 'HASH') {
+            $x->inject($c, $v);
+        }
+        elsif (ref $v eq 'ARRAY') {
+            for (@{$v}) {
+                $x->inject($c, $_);
+            }
+        } elsif (! ref $v && $self->{'kind'} ne 'if' && $self->{'kind'} ne 'for') {
+            $c->concat(
+                $self->{'kind'} eq 'xml' ? $self->escape_xml($v)
+                : $self->{'kind'} eq 'uri' ? $self->encode_uri($v)
+                : $self->{'kind'} eq 'raw' ? $v
+                : $self->escape_text($v),
+            );
+        }
+    }
+    return $c;
 }
 
 package UserSession;
@@ -731,12 +852,11 @@ use parent qw(-norequire WebResponder);
 
 sub rendar {
     my($self) = @_;
-    my $body = $self->template_store->fetch($self->template_path);
-    my $username = $self->escape_text(
-        $self->session_controller->selection->user_name,
+    $self->response->body(
+        $self->template_engine->rendar($self->template, {
+            'username' => $self->session_controller->selection->user_name,
+        }),
     );
-    $body =~ s/{\$username}/$username/gmsx;
-    $self->response->body($body);
     return $self;
 }
 
@@ -756,8 +876,9 @@ use parent qw(-norequire WebResponder);
 
 sub rendar {
     my($self) = @_;
-    my $body = $self->template_store->fetch($self->template_path);
-    $self->response->body($body);
+    $self->response->body(
+        $self->template_engine->rendar($self->template, {}),
+    );
     return $self;
 }
 
@@ -789,8 +910,9 @@ sub method_not_allowed {
 
 sub rendar {
     my($self) = @_;
-    my $body = $self->template_store->fetch($self->template_path);
-    $self->response->body($body);
+    $self->response->body(
+        $self->template_engine->rendar($self->template, {}),
+    );
     return $self;
 }
 
@@ -849,18 +971,18 @@ my $dependency = {
     ],
     ':TopPage-SignedIn' => ['TopPage::SignedIn',
         'location' => ':TOPPAGE_LOCATION',
-        'template_path' => 't/template/toppage-signedin.html',
-        'template_store' => 'WebResponder::StoreFs',
+        'template' => 't/template/toppage-signedin.html',
+        'template_engine' => 'WebResponder::Template',
     ],
     ':TopPage-SignedOut' => ['TopPage::SignedOut',
         'location' => ':TOPPAGE_LOCATION',
-        'template_path' => 't/template/toppage-signedout.html',
-        'template_store' => 'WebResponder::StoreFs',
+        'template' => 't/template/toppage-signedout.html',
+        'template_engine' => 'WebResponder::Template',
     ],
     ':SigninPage' => ['SigninPage',
         'location' => '/signin',
-        'template_path' => 't/template/signin.html',
-        'template_store' => 'WebResponder::StoreFs',
+        'template' => 't/template/signin.html',
+        'template_engine' => 'WebResponder::Template',
     ],
     ':SignoutPage' => ['SignoutPage',
         'location' => '/signout',
@@ -891,9 +1013,18 @@ DemoApplication - demonstration for PSGI application of Test::XmlServer
 
 =head1 DESCRIPTION
 
-=head1 METHODS
+briefs buildin template engine.
 
-=over
+    {{ for var }} block {{ end }}
+    {{ if var }} block {{ end }}
+    {{ var }}         escape_text($h->{$var})
+    {{ var | text }}  escape_text($h->{$var})
+    {{ var | html }}  escape_xml($h->{$var})
+    {{ var | xml }}   escape_xml($h->{$var})
+    {{ var | uri }}   encode_uri($h->{$var})
+    {{ var | raw }}   $var
+
+=head1 METHODS
 
 =over
 

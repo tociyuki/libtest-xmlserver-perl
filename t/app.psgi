@@ -624,12 +624,7 @@ sub concat {
 
 sub parse {
     my($self, $s) = @_;
-    my $p = $self->builder(WebResponder::Template::Node->new('text', q{?}));
-    my %kind = (
-        'if' => 'if', 'for' => 'for', 'text' => 'text',
-        'html' => 'xml', 'xml' => 'xml', 'uri' => 'uri', 'url' => 'uri',
-        'raw' => 'raw',
-    );
+    my $p = $self->builder($self->node);
     my @stack;
     while ($s =~ m{\G
         (.*?)
@@ -642,15 +637,15 @@ sub parse {
             \}\}\n?
         )
     }gmsx) {
-        $p->concat($1);
+        if ($1 ne q{}) {
+            push @{$p->{'child'}}, $self->node_const($1);
+        }
         last if $#- == 2;
         if ($3) {
             $p = pop @stack;
             next;
         }
-        my $q = WebResponder::Template::Node->new(
-            $kind{$4 || $7 || 'text'} => $5 || $6 || q{},
-        );
+        my $q = $self->node($4 || $7 || 'text', $5 || $6);
         push @{$p->{'child'}}, $q;
         if ($4) {
             push @stack, $p;
@@ -661,66 +656,118 @@ sub parse {
     return $self;
 }
 
+{
+    my %NODE_KIND = (
+        'if' => 'if', 'for' => 'for', 'text' => 'text',
+        'html' => 'xml', 'xml' => 'xml', 'uri' => 'uri', 'url' => 'uri',
+        'raw' => 'raw',
+    );
+
+    sub node {
+        my($self, $kind, $name) = @_;
+        $kind = $NODE_KIND{$kind || q{?}} || q{};
+        my $class_node = 'WebResponder::Template::Node' . (ucfirst $kind);
+        return $class_node->new({'name' => $name || q{?}, 'child' => []});
+    }
+
+    sub node_const {
+        my($self, $data) = @_;
+        return WebResponder::Template::NodeConst->new({'data' => $data})
+    }
+}
+
 package WebResponder::Template::Node;
 use Carp;
 use parent qw(-norequire WebComponent);
 
-sub concat {
-    my($self, $text) = @_;
-    return $self if $text eq q{};
-    if (! @{$self->{'child'}} || ref $self->{'child'}[-1]) {
-        push @{$self->{'child'}}, $text;
-    }
-    else {
-        $self->{'child'}[-1] .= $text;
-    }
-    return $self;
-}
-
-sub new {
-    my($class, $kind, $name) = @_;
-    return bless {
-        'kind' => $kind,
-        'name' => $name,
-        'child' => [],
-    }, $class;
-}
-
 sub inject {
     my($self, $c, $h) = @_;
     for my $child (@{$self->{'child'}}) {
-        if (! ref $child){
-            $c->concat($child);
-            next;
-        }
-        my $k = $child->{'name'};
-        my $v = exists $h->{$k} ? $h->{$k} : next;
-        next if ! defined $v;
-        if ($child->{'kind'} eq 'if') {
-            if (ref $v eq 'HASH') {
-                $child->inject($c, $v);
-            }
-            else {
-                $child->inject($c, {});
-            }
-        }
-        elsif ($child->{'kind'} eq 'for') {
-            if (ref $v eq 'HASH') {
-                $child->inject($c, $v);
-            }
-            elsif (ref $v eq 'ARRAY') {
-                for (@{$v}) {
-                    $child->inject($c, $_);
-                }
-            }
-        }
-        else {
-            $c->concat(
-                $child->{'kind'} eq 'xml' ? $self->escape_xml($v)
-                : $child->{'kind'} eq 'uri' ? $self->escape_uri($v)
-                : $child->{'kind'} eq 'raw' ? $v
-                : $child->escape_text($v),
-            );
+        $child->inject($c, $h);
+    }
+    return $c;
+}
+
+package WebResponder::Template::NodeConst;
+use Carp;
+use parent qw(-norequire WebComponent);
+
+sub inject {
+    my($self, $c, $h) = @_;
+    return $c->concat($self->{'data'});
+}
+
+package WebResponder::Template::NodeText;
+use Carp;
+use parent qw(-norequire WebResponder::Template::Node);
+
+sub inject {
+    my($self, $c, $h) = @_;
+    my $k = $self->{'name'};
+    return if ! exists $h->{$k} || ! defined $h->{$k};
+    return $c->concat($self->escape_text($h->{$k}));
+}
+
+package WebResponder::Template::NodeXml;
+use Carp;
+use parent qw(-norequire WebResponder::Template::Node);
+
+sub inject {
+    my($self, $c, $h) = @_;
+    my $k = $self->{'name'};
+    return if ! exists $h->{$k} || ! defined $h->{$k};
+    return $c->concat($self->escape_xml($h->{$k}));
+}
+
+package WebResponder::Template::NodeUri;
+use Carp;
+use parent qw(-norequire WebResponder::Template::Node);
+
+sub inject {
+    my($self, $c, $h) = @_;
+    my $k = $self->{'name'};
+    return if ! exists $h->{$k} || ! defined $h->{$k};
+    return $c->concat($self->escape_uri($h->{$k}));
+}
+
+package WebResponder::Template::NodeRaw;
+use Carp;
+use parent qw(-norequire WebResponder::Template::Node);
+
+sub inject {
+    my($self, $c, $h) = @_;
+    my $k = $self->{'name'};
+    return if ! exists $h->{$k} || ! defined $h->{$k};
+    return $c->concat($h->{$k});
+}
+
+package WebResponder::Template::NodeIf;
+use Carp;
+use parent qw(-norequire WebResponder::Template::Node);
+
+sub inject {
+    my($self, $c, $h) = @_;
+    my $k = $self->{'name'};
+    return if ! exists $h->{$k} || ! defined $h->{$k};
+    my $v = ref $h->{$k} eq 'HASH' ? $h->{$k} : {};
+    for my $child (@{$self->{'child'}}) {
+        $child->inject($c, $v);
+    }
+    return $c;
+}
+
+package WebResponder::Template::NodeFor;
+use Carp;
+use parent qw(-norequire WebResponder::Template::Node);
+
+sub inject {
+    my($self, $c, $h) = @_;
+    my $k = $self->{'name'};
+    return if ! exists $h->{$k} || ! defined $h->{$k};
+    my $list = ref $h->{$k} eq 'ARRAY' ? $h->{$k} : [$h->{$k}];
+    for my $item (@{$list}) {
+        for my $child (@{$self->{'child'}}) {
+            $child->inject($c, $item);
         }
     }
     return $c;

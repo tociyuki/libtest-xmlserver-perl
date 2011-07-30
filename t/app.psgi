@@ -2,7 +2,7 @@ package DemoApplication;
 use strict;
 use warnings;
 
-our $VERSION = '0.002';
+our $VERSION = '0.003';
 # $Id$
 # DemoApplication - demonstration for PSGI application of Test::XmlServer
 
@@ -58,6 +58,15 @@ sub escape_text {
         $1 ? $XML_SPECIAL{$1} : $2 ? qq{\&$2;} : '&amp;'
     }egmosx;
     return $string;
+}
+
+sub escape_uri {
+    my($self, $uri) = @_;
+    if (utf8::is_utf8($uri)) {
+        $uri = Encode::encode('utf-8', $uri);
+    }
+    $uri =~ s{([^a-zA-Z0-9_\-./:&;=+\#?~])}{ sprintf '%%%02X', ord $1 }egmosx;
+    return $uri;
 }
 
 sub decode_uri {
@@ -630,7 +639,7 @@ sub parse {
             |   (if|for) \s* ([a-z][a-z0-9]*) \s*
             |   ([a-z][a-z0-9]*) \s* (?: \| \s* (text|html|xml|uri|url|raw) \s*)?
             )
-            \}\}
+            \}\}\n?
         )
     }gmsx) {
         $p->concat($1);
@@ -642,7 +651,7 @@ sub parse {
         my $q = WebResponder::Template::Node->new(
             $kind{$4 || $7 || 'text'} => $5 || $6 || q{},
         );
-        push @{$p->{tmpl}}, $q;
+        push @{$p->{'child'}}, $q;
         if ($4) {
             push @stack, $p;
             $p = $q;
@@ -659,11 +668,11 @@ use parent qw(-norequire WebComponent);
 sub concat {
     my($self, $text) = @_;
     return $self if $text eq q{};
-    if (! @{$self->{'tmpl'}} || ref $self->{'tmpl'}[-1]) {
-        push @{$self->{'tmpl'}}, $text;
+    if (! @{$self->{'child'}} || ref $self->{'child'}[-1]) {
+        push @{$self->{'child'}}, $text;
     }
     else {
-        $self->{'tmpl'}[-1] .= $text;
+        $self->{'child'}[-1] .= $text;
     }
     return $self;
 }
@@ -673,32 +682,44 @@ sub new {
     return bless {
         'kind' => $kind,
         'name' => $name,
-        'tmpl' => [],
+        'child' => [],
     }, $class;
 }
 
 sub inject {
     my($self, $c, $h) = @_;
-    for my $x (@{$self->{'tmpl'}}) {
-        if (! ref $x){
-            $c->concat($x);
+    for my $child (@{$self->{'child'}}) {
+        if (! ref $child){
+            $c->concat($child);
             next;
         }
-        my $k = $x->{'name'};
+        my $k = $child->{'name'};
         my $v = exists $h->{$k} ? $h->{$k} : next;
-        if (ref $v eq 'HASH') {
-            $x->inject($c, $v);
-        }
-        elsif (ref $v eq 'ARRAY') {
-            for (@{$v}) {
-                $x->inject($c, $_);
+        next if ! defined $v;
+        if ($child->{'kind'} eq 'if') {
+            if (ref $v eq 'HASH') {
+                $child->inject($c, $v);
             }
-        } elsif (! ref $v && $self->{'kind'} ne 'if' && $self->{'kind'} ne 'for') {
+            else {
+                $child->inject($c, {});
+            }
+        }
+        elsif ($child->{'kind'} eq 'for') {
+            if (ref $v eq 'HASH') {
+                $child->inject($c, $v);
+            }
+            elsif (ref $v eq 'ARRAY') {
+                for (@{$v}) {
+                    $child->inject($c, $_);
+                }
+            }
+        }
+        else {
             $c->concat(
-                $self->{'kind'} eq 'xml' ? $self->escape_xml($v)
-                : $self->{'kind'} eq 'uri' ? $self->encode_uri($v)
-                : $self->{'kind'} eq 'raw' ? $v
-                : $self->escape_text($v),
+                $child->{'kind'} eq 'xml' ? $self->escape_xml($v)
+                : $child->{'kind'} eq 'uri' ? $self->escape_uri($v)
+                : $child->{'kind'} eq 'raw' ? $v
+                : $child->escape_text($v),
             );
         }
     }
@@ -1005,7 +1026,7 @@ DemoApplication - demonstration for PSGI application of Test::XmlServer
 
 =head1 VERSION
 
-0.002
+0.003
 
 =head1 SYNOPSYS
 

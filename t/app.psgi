@@ -618,7 +618,7 @@ sub parse {
     my $p = $self->builder(WebResponder::Template::Node->new('text', q{?}));
     my %kind = (
         'if' => 'if', 'for' => 'for', 'text' => 'text',
-        'html' => 'xml', 'xml' => 'xml', 'uri' => 'uri', 'url' => 'url',
+        'html' => 'xml', 'xml' => 'xml', 'uri' => 'uri', 'url' => 'uri',
         'raw' => 'raw',
     );
     my @stack;
@@ -628,7 +628,7 @@ sub parse {
         |   \{\{\s*
             (?: (end) \s*
             |   (if|for) \s* ([a-z][a-z0-9]*) \s*
-            |   ([a-z][a-z0-9]*) \s* (?: \| \s* (text|html|xml|uri|uri|raw) \s*)?
+            |   ([a-z][a-z0-9]*) \s* (?: \| \s* (text|html|xml|uri|url|raw) \s*)?
             )
             \}\}
         )

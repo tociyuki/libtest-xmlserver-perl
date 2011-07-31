@@ -2,7 +2,7 @@ package DemoApplication;
 use strict;
 use warnings;
 
-our $VERSION = '0.003';
+our $VERSION = '0.004';
 # $Id$
 # DemoApplication - demonstration for PSGI application of Test::XmlServer
 
@@ -627,7 +627,7 @@ sub compile {
     my($self) = @_;
     croak 'empty source' if ! $self->source;
     my $pkg = caller;
-    my $code = eval "package $pkg;" . $self->source;
+    my $code = eval "package $pkg;" . $self->source; ## no critic qw(StringyEval)
     croak $@ if $@;
     $self->builder($code);
     return $self;
@@ -637,61 +637,63 @@ sub parse {
     my($self, $s) = @_;
 my $tmpl = <<'TMPL';
 sub{
-my($e, $h) = @_;
+my($e,$h)=@_;
 use utf8;
-my $t = '';
+my$t='';
 TMPL
-    my($t_eof, $t_end, $t_if, $t_for, $t_subst) = (2 .. 6);
+    my($t_eof, $t_rem, $t_end, $t_if, $t_for, $t_subst) = (2 .. 7);
     while ($s =~ m{\G
         (.*?)
         (?: (\z)
-        |   \{\{ \s*
-            (?: (end) \s*
+        |   \{\{\s*
+            (?: (\#)
+            |   (end) \s*
             |   if \s* ([a-z][a-z0-9_]*) \s*
             |   for \s* ([a-z][a-z0-9_]*) \s*
             |   ([a-z][a-z0-9_]*) \s* (?: \| \s* (text|html|xml|uri|url|raw) \s*)?
             )
-            \}\} \n?
+            [^\{\}]*
+            \}\}\n?
         )
     }gmosx) {
-        my($token, $var, $filter) = ($#-, $7 ? ($6, $7) : ($+));
+        my($token, $var, $filter) = ($#-, $8 ? ($7, $8) : ($+));
         if ($1 ne q{}) {
             my $const = $1;
             $const =~ s/'/\\'/gmsx;
 $tmpl .= <<"TMPL";
-\$t .= '$const';
+\$t.='$const';
 TMPL
         }
         last if $token == $t_eof;
+        next if $token == $t_rem;
+        if ($token == $t_end) {
+$tmpl .= <<'TMPL';
+}}
+TMPL
+            next;
+        }
         if ($token == $t_if) {
 $tmpl .= <<"TMPL";
-if (exists \$h->{'$var'} && defined \$h->{'$var'}) {
-my \$g = ref \$h->{'$var'} eq 'HASH' ? \$h->{'$var'} : {};
-for my \$h (\$g) {
+if(exists\$h->{'$var'}&&defined\$h->{'$var'}){
+my\$g=ref\$h->{'$var'}eq'HASH'?\$h->{'$var'}:{};
+for my\$h(\$g){
 TMPL
             next;
         }
         if ($token == $t_for) {
 $tmpl .= <<"TMPL";
-if (exists \$h->{'$var'} && defined \$h->{'$var'}) {
-my \$a = ref \$h->{'$var'} eq 'ARRAY' ? \$h->{'$var'} : [\$h->{'$var'}];
-for my \$i (0 .. \$#{\$a}) {
-my \$h = {'i' => \$i + 1, 'odd' => (\$i % 2 == 0), 'even' => (\$i % 2 == 1),\%{\$a->[\$i]}};
-TMPL
-            next;
-        }
-        if ($token == $t_end) {
-$tmpl .= <<'TMPL';
-}
-}
+if(exists\$h->{'$var'}&&defined\$h->{'$var'}){
+my\$a=ref\$h->{'$var'}eq'ARRAY'?\$h->{'$var'}:[\$h->{'$var'}];
+for my\$i(0..\$#{\$a}){
+my\$h={'nth'=>\$i+1,'odd'=>(\$i%2==0),'even'=>(\$i%2==1),'halfway'=>\$i<\$#{\$a},\%{\$a->[\$i]}};
 TMPL
             next;
         }
         if ($token >= $t_subst) {
             $filter = $NODE_FILTER{$filter || 'text'};
 $tmpl .= <<"TMPL";
-if (exists \$h->{'$var'} && defined \$h->{'$var'}) {
-\$t .= \$e->escape_$filter(\$h->{'$var'});
+if(exists\$h->{'$var'}&&defined\$h->{'$var'}){
+\$t.=\$e->escape_$filter(\$h->{'$var'});
 }
 TMPL
             next;
@@ -1005,24 +1007,13 @@ DemoApplication - demonstration for PSGI application of Test::XmlServer
 
 =head1 VERSION
 
-0.003
+0.004
 
 =head1 SYNOPSYS
 
     my $application = require 'app.psgi';
 
 =head1 DESCRIPTION
-
-briefs buildin template engine.
-
-    {{ for var }} block {{ end }}
-    {{ if var }} block {{ end }}
-    {{ var }}         escape_text($h->{$var})
-    {{ var | text }}  escape_text($h->{$var})
-    {{ var | html }}  escape_xml($h->{$var})
-    {{ var | xml }}   escape_xml($h->{$var})
-    {{ var | uri }}   encode_uri($h->{$var})
-    {{ var | raw }}   $var
 
 =head1 METHODS
 
@@ -1106,9 +1097,38 @@ briefs buildin template engine.
 
 =item C<< $webresponder->check(\%param, \%constraint) >>
 
-=item C<< $webresponder_storefs->fetch($key) >>
+=item C<< $webresponder_template->rendar($template_file_path, \%param) >>
 
-Fetchs from the local file system as a Key-Value store.
+briefs buildin double curly signs template engine.
+
+    {{ for var }} block {{ end }}  for (@{$param->{var}}) { apply($_) }
+    {{ if var }} block {{ end }}   if ($param->{var}) { apply($param->{var}) }
+    {{ var }}         substitute escape_text($param->{var})
+    {{ var | text }}  substitute escape_text($param->{var})
+    {{ var | html }}  substitute escape_xml($param->{var})
+    {{ var | xml }}   substitute escape_xml($param->{var})
+    {{ var | uri }}   substitute encode_uri($param->{var})
+    {{ var | raw }}   substitute $param->{var}
+    {{ # comment }}
+
+=item C<< $webresponder_template_engine->parse($template_content_string) >>
+
+=item C<< $webresponder_template_engine->source([$string]) >>
+
+Sets/Gets parsed template perl source code.
+It is turned on utf8 flag.
+
+=item C<< $webresponder_template_engine->compile >>
+
+Compiles a perl source code to a perl code reference.
+
+=item C<< $webresponder_template_engine->builder([\&template]) >>
+
+Sets/Gets compiled template perl code reference.
+
+=item C<< $webresponder_template_engine->apply(\%param) >>
+
+=item C<< $webresponder_template_engine->result >>
 
 =item C<< UserSession->new_mock(%init_value) >>
 

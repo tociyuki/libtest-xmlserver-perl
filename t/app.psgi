@@ -607,170 +607,102 @@ package WebResponder::Template::Engine;
 use Carp;
 use parent qw(-norequire WebComponent);
 
-__PACKAGE__->mk_accessors(qw(builder result));
+my %NODE_FILTER = (
+    'text' => 'text', 'html' => 'xml', 'xml' => 'xml',
+    'uri' => 'uri', 'url' => 'uri', 'raw' => 'raw',
+);
+
+__PACKAGE__->mk_accessors(qw(source builder result));
 
 sub apply {
     my($self, $h) = @_;
-    $self->result(q{});
-    $self->builder->inject($self, $h);
+    if (! $self->builder) {
+        $self->compile;
+    }
+    $self->result($self->builder->($self, $h));
     return $self;
 }
 
-sub concat {
-    my($self, $x) = @_;
-    $self->result($self->result . $x);
+sub compile {
+    my($self) = @_;
+    croak 'empty source' if ! $self->source;
+    my $pkg = caller;
+    my $code = eval "package $pkg;" . $self->source;
+    croak $@ if $@;
+    $self->builder($code);
     return $self;
 }
 
 sub parse {
     my($self, $s) = @_;
-    my $p = $self->builder($self->node);
-    my @stack;
+my $tmpl = <<'TMPL';
+sub{
+my($e, $h) = @_;
+use utf8;
+my $t = '';
+TMPL
+    my($t_eof, $t_end, $t_if, $t_for, $t_subst) = (2 .. 6);
     while ($s =~ m{\G
         (.*?)
         (?: (\z)
-        |   \{\{\s*
+        |   \{\{ \s*
             (?: (end) \s*
-            |   (if|for) \s* ([a-z][a-z0-9]*) \s*
-            |   ([a-z][a-z0-9]*) \s* (?: \| \s* (text|html|xml|uri|url|raw) \s*)?
+            |   if \s* ([a-z][a-z0-9_]*) \s*
+            |   for \s* ([a-z][a-z0-9_]*) \s*
+            |   ([a-z][a-z0-9_]*) \s* (?: \| \s* (text|html|xml|uri|url|raw) \s*)?
             )
-            \}\}\n?
+            \}\} \n?
         )
-    }gmsx) {
+    }gmosx) {
+        my($token, $var, $filter) = ($#-, $7 ? ($6, $7) : ($+));
         if ($1 ne q{}) {
-            push @{$p->{'child'}}, $self->node_const($1);
+            my $const = $1;
+            $const =~ s/'/\\'/gmsx;
+$tmpl .= <<"TMPL";
+\$t .= '$const';
+TMPL
         }
-        last if $#- == 2;
-        if ($3) {
-            $p = pop @stack;
+        last if $token == $t_eof;
+        if ($token == $t_if) {
+$tmpl .= <<"TMPL";
+if (exists \$h->{'$var'} && defined \$h->{'$var'}) {
+my \$g = ref \$h->{'$var'} eq 'HASH' ? \$h->{'$var'} : {};
+for my \$h (\$g) {
+TMPL
             next;
         }
-        my $q = $self->node($4 || $7 || 'text', $5 || $6);
-        push @{$p->{'child'}}, $q;
-        if ($4) {
-            push @stack, $p;
-            $p = $q;
+        if ($token == $t_for) {
+$tmpl .= <<"TMPL";
+if (exists \$h->{'$var'} && defined \$h->{'$var'}) {
+my \$a = ref \$h->{'$var'} eq 'ARRAY' ? \$h->{'$var'} : [\$h->{'$var'}];
+for my \$i (0 .. \$#{\$a}) {
+my \$h = {'i' => \$i + 1, 'odd' => (\$i % 2 == 0), 'even' => (\$i % 2 == 1),\%{\$a->[\$i]}};
+TMPL
+            next;
+        }
+        if ($token == $t_end) {
+$tmpl .= <<'TMPL';
+}
+}
+TMPL
+            next;
+        }
+        if ($token >= $t_subst) {
+            $filter = $NODE_FILTER{$filter || 'text'};
+$tmpl .= <<"TMPL";
+if (exists \$h->{'$var'} && defined \$h->{'$var'}) {
+\$t .= \$e->escape_$filter(\$h->{'$var'});
+}
+TMPL
+            next;
         }
     }
-    $#stack == -1 or croak 'not blance {{ for|if x }} .. {{ end }}.';
+$tmpl .= <<'TMPL';
+return $t;
+}
+TMPL
+    $self->source($tmpl);
     return $self;
-}
-
-{
-    my %NODE_KIND = (
-        'if' => 'if', 'for' => 'for', 'text' => 'text',
-        'html' => 'xml', 'xml' => 'xml', 'uri' => 'uri', 'url' => 'uri',
-        'raw' => 'raw',
-    );
-
-    sub node {
-        my($self, $kind, $name) = @_;
-        $kind = $NODE_KIND{$kind || q{?}} || q{};
-        my $class_node = 'WebResponder::Template::Node' . (ucfirst $kind);
-        return $class_node->new({'name' => $name || q{?}, 'child' => []});
-    }
-
-    sub node_const {
-        my($self, $data) = @_;
-        return WebResponder::Template::NodeConst->new({'data' => $data})
-    }
-}
-
-package WebResponder::Template::Node;
-use Carp;
-use parent qw(-norequire WebComponent);
-
-sub inject {
-    my($self, $c, $h) = @_;
-    for my $child (@{$self->{'child'}}) {
-        $child->inject($c, $h);
-    }
-    return $c;
-}
-
-package WebResponder::Template::NodeConst;
-use Carp;
-use parent qw(-norequire WebComponent);
-
-sub inject {
-    my($self, $c, $h) = @_;
-    return $c->concat($self->{'data'});
-}
-
-package WebResponder::Template::NodeText;
-use Carp;
-use parent qw(-norequire WebResponder::Template::Node);
-
-sub inject {
-    my($self, $c, $h) = @_;
-    my $k = $self->{'name'};
-    return if ! exists $h->{$k} || ! defined $h->{$k};
-    return $c->concat($self->escape_text($h->{$k}));
-}
-
-package WebResponder::Template::NodeXml;
-use Carp;
-use parent qw(-norequire WebResponder::Template::Node);
-
-sub inject {
-    my($self, $c, $h) = @_;
-    my $k = $self->{'name'};
-    return if ! exists $h->{$k} || ! defined $h->{$k};
-    return $c->concat($self->escape_xml($h->{$k}));
-}
-
-package WebResponder::Template::NodeUri;
-use Carp;
-use parent qw(-norequire WebResponder::Template::Node);
-
-sub inject {
-    my($self, $c, $h) = @_;
-    my $k = $self->{'name'};
-    return if ! exists $h->{$k} || ! defined $h->{$k};
-    return $c->concat($self->escape_uri($h->{$k}));
-}
-
-package WebResponder::Template::NodeRaw;
-use Carp;
-use parent qw(-norequire WebResponder::Template::Node);
-
-sub inject {
-    my($self, $c, $h) = @_;
-    my $k = $self->{'name'};
-    return if ! exists $h->{$k} || ! defined $h->{$k};
-    return $c->concat($h->{$k});
-}
-
-package WebResponder::Template::NodeIf;
-use Carp;
-use parent qw(-norequire WebResponder::Template::Node);
-
-sub inject {
-    my($self, $c, $h) = @_;
-    my $k = $self->{'name'};
-    return if ! exists $h->{$k} || ! defined $h->{$k};
-    my $v = ref $h->{$k} eq 'HASH' ? $h->{$k} : {};
-    for my $child (@{$self->{'child'}}) {
-        $child->inject($c, $v);
-    }
-    return $c;
-}
-
-package WebResponder::Template::NodeFor;
-use Carp;
-use parent qw(-norequire WebResponder::Template::Node);
-
-sub inject {
-    my($self, $c, $h) = @_;
-    my $k = $self->{'name'};
-    return if ! exists $h->{$k} || ! defined $h->{$k};
-    my $list = ref $h->{$k} eq 'ARRAY' ? $h->{$k} : [$h->{$k}];
-    for my $item (@{$list}) {
-        for my $child (@{$self->{'child'}}) {
-            $child->inject($c, $item);
-        }
-    }
-    return $c;
 }
 
 package UserSession;

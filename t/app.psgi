@@ -2,13 +2,14 @@ package DemoApplication;
 use strict;
 use warnings;
 
-our $VERSION = '0.005';
+our $VERSION = '0.006';
 # $Id$
 # DemoApplication - demonstration for PSGI application of Test::XmlServer
 
 package WebComponent;
 use strict;
 use warnings;
+use Carp;
 use Time::Piece;
 
 sub new {
@@ -94,7 +95,7 @@ my @MONTH_ABBR = qw(Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec);
 my @AMPM_NAME = qw(AM PM);
 
 sub strftime {
-    my($class, $fmt, $epoch) = @_;
+    my($class, $fmt, @arg) = @_;
     $fmt ||= '%Oc';
     $fmt =~ s/%c/%a %b %2d %H:%M:%S %Y/gmsx; # ANSI C's asctime() format
     $fmt =~ s/%Oc/%a, %d %b %Y %H:%M:%S GMT/gmsx; # RFC1123
@@ -103,7 +104,7 @@ sub strftime {
     $fmt =~ s/%T/%H:%M:%S/gmsx;
     my $is_utc = $fmt =~ m{GMT|UTC|[+-]00:?00|%-?[0-9]*[mdMS]Z\b};
     my %t;
-    $t{'s'} = $epoch;
+    $t{'s'} = $class->decode_timestamp(@arg);
     @t{qw(S M H d _b _y _a j _dst)} =
         $is_utc ? CORE::gmtime $t{'s'} : CORE::localtime $t{'s'};
     @t{qw(Y m w)} = ($t{'_y'} + 1900, $t{'_b'} + 1, $t{'_a'});
@@ -134,6 +135,45 @@ sub strftime {
         : (sprintf $2 ne q{} ? "%$2d" : $p{$3} ? $p{$3} : '%02d', $t{$3})
     }egmsx;
     return $fmt;
+}
+
+my $APART = 'S(?:at|un)|Mon|Wed|T(?:hu|ue)|Fri';
+my $BPART = 'A(?:pr|ug)|Dec|Feb|J(?:an|u[nl])|Ma[ry]|Nov|Oct|Sep';
+my $TPART = '([0-9]{2})[:]([0-9]{2})[:]([0-9]{2})';
+my %B2MONTH = map { $MONTH_ABBR[$_] => $_ } 0 .. $#MONTH_ABBR;
+
+sub decode_timestamp {
+    my($class, $timestamp) = @_;
+    return $timestamp->epoch if eval{ $timestamp->can('epoch') };
+    return time if ! defined $timestamp || $timestamp eq 'now';
+    return $timestamp if $timestamp =~ m/\A[0-9]+(?:[.][0-9]+)?\z/msx;
+    if ($timestamp =~ m{
+        \A(?: ([0-9]{4})[/-]([0-9]{2}) (?:[/-]([0-9]{2}))?
+            (?: [T\x20] ([0-9]{2})[:]([0-9]{2}) (?:[:]([0-9]{2})(?:[.][0-9]+)?)?)?
+            (Z|\x20*(?:GMT|UTC|[+-]00[:]?00))?
+        |   ([0-9]{2})[:]([0-9]{2}) (?:[:]([0-9]{2})(?:[.][0-9]+)?)?
+        )\z
+    }msx) {
+        my($y, $mon, $d) = ($1 || 2000, $2 || 1, $3 || 1);
+        my($h, $min, $s) = ($4 || $8 || 0, $5 || $9 || 0, $6 || $10 || 0);
+        return defined $7 ? timegm($s, $min, $h, $d, $mon - 1, $y - 1900)
+            : timelocal($s, $min, $h, $d, $mon - 1, $y - 1900);
+    }
+    if (my($d, $b, $y, $h, $min, $s, $zone) = $timestamp =~ m{
+        \b(?:${APART}),\x20*([0-9]{1,2})\x20(${BPART})\x20([0-9]{4})\x20${TPART}
+        (?:\x20+(GMT|UTC|[+-]0000))?
+    }msx) {
+        return defined $zone ? timegm($s, $min, $h, $d, $B2MONTH{$b}, $y - 1900)
+            : timelocal($s, $min, $h, $d, $B2MONTH{$b}, $y - 1900);        
+    }
+    if (my($b, $d, $h, $min, $s, $y, $zone) = $timestamp =~ m{
+        \b(?:${APART})\x20(${BPART})\x20+([0-9]{1,2})\x20${TPART}\x20([0-9]{4})
+        (?:\x20+(GMT|UTC|[+-]0000))?
+    }msx) {
+        return defined $zone ? timegm($s, $min, $h, $d, $B2MONTH{$b}, $y - 1900)
+            : timelocal($s, $min, $h, $d, $B2MONTH{$b}, $y - 1900);        
+    }
+    croak 'invalid time stamp format.';
 }
 
 package WebResponse;
@@ -310,7 +350,7 @@ use parent qw(-norequire WebComponent);
 
 __PACKAGE__->mk_accessors(
     qw(env response dependency location template_engine template),
-    qw(controller session_controller),
+    qw(controller session_controller responder_class),
 );
 
 my %METHODS = (
@@ -642,34 +682,7 @@ sub _filter_nl2br {
 
 sub _filter_date_format {
     my($class, $timestamp, $fmt) = @_;
-    my $epoch;
-    if (ref $timestamp) {
-        # can_ok 'Time::Piece' || 'DateTime', 'epoch', 'datetime'.
-        eval{ $timestamp->can('epoch') } or croak 'missing method epoch.';
-        $epoch = $timestamp->epoch;
-    }
-    elsif (! defined $timestamp || $timestamp eq 'now') {
-        $epoch = time;
-    }
-    elsif ($timestamp =~ m/\A[0-9]+(?:[.][0-9]+)?\z/msx) {
-        $epoch = $timestamp;
-    }
-    elsif ($timestamp =~ m{
-        \A(?: ([0-9]{4})[/-]([0-9]{2}) (?:[/-]([0-9]{2}))?
-            (?: [T\x20] ([0-9]{2})[:]([0-9]{2}) (?:[:]([0-9]{2})(?:[.][0-9]+)?)?)?
-            (Z|\x20*(?:GMT|UTC|[+-]00[:]?00))?
-        |   ([0-9]{2})[:]([0-9]{2}) (?:[:]([0-9]{2})(?:[.][0-9]+)?)?
-        )\z
-    }msx) {
-        my($y, $mon, $d) = ($1 || 2000, $2 || 1, $3 || 1);
-        my($h, $min, $s) = ($4 || $8 || 0, $5 || $9 || 0, $6 || $10 || 0);
-        $epoch = defined $7 ? timegm($s, $min, $h, $d, $mon - 1, $y - 1900)
-            : timelocal($s, $min, $h, $d, $mon - 1, $y - 1900);
-    }
-    else {
-        croak 'invalid time stamp format.';
-    }
-    return $class->strftime($fmt || '%FT%T', $epoch);
+    return $class->strftime($fmt || '%FT%T', $timestamp);
 }
 
 sub apply {
@@ -1216,6 +1229,22 @@ format:
         %Z - JST timezone
         %z - +0900 timezone offset for RFC1123
         %Oz - +09:00 timezone offset for ISO8601
+
+=item C<< $webcomponent->decode_timestamp($timestamp) >>
+
+Gets epoch from various timestamp.
+
+    1. DateTime, Time::Piece, or any object that can epoch.
+    2. string 'now' or undef.
+    3. integer.
+    4. '%Y-%m-%d %H:%M:%S' or '%Y-%m-%d %H:%M:%SZ'
+    5. '%Y-%m-%dT%H:%M:%S' or '%Y-%m-%dT%H:%M:%SZ'
+    6. '%Y-%m-%d %H:%M' or '%Y-%m-%d %H:%MZ'
+    7. '%Y-%m-%dT%H:%M' or '%Y-%m-%dT%H:%MZ'
+    8. '%Y-%m-%d' or '%Y-%m-%dZ'
+    9. '%H:%M:%S' or '%H:%M:%SZ' (assume date is '2000-01-01')
+    10. '%a, %d %b %Y %H:%M:%S' or '%a, %d %b %Y %H:%M:%S GMT'
+    11. '%a %b %d %H:%M:%S %Y' or '%a %b %d %H:%M:%S %Y GMT'
 
 =item C<< $webresponse->code([$numeric]) >>
 

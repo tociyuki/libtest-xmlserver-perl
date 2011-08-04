@@ -2,13 +2,14 @@ package DemoApplication;
 use strict;
 use warnings;
 
-our $VERSION = '0.004';
+our $VERSION = '0.005';
 # $Id$
 # DemoApplication - demonstration for PSGI application of Test::XmlServer
 
 package WebComponent;
 use strict;
 use warnings;
+use Time::Piece;
 
 sub new {
     my($class, @arg) = @_;
@@ -47,16 +48,16 @@ my %XML_SPECIAL = (
 
 sub escape_xml {
     my($self, $string) = @_;
-    $string =~ s{([&<>"'\\])}{ $XML_SPECIAL{$1} }egmosx;
-    return $string;
-}
-
-sub escape_text {
-    my($self, $string) = @_;
     return q{} if $string eq q{};
     $string =~ s{(?:([<>"'\\])|\&(?:($AMP);)?)}{
         $1 ? $XML_SPECIAL{$1} : $2 ? qq{\&$2;} : '&amp;'
     }egmosx;
+    return $string;
+}
+
+sub escape_xmlall {
+    my($self, $string) = @_;
+    $string =~ s{([&<>"'\\])}{ $XML_SPECIAL{$1} }egmosx;
     return $string;
 }
 
@@ -69,6 +70,15 @@ sub escape_uri {
     return $uri;
 }
 
+sub escape_uriall {
+    my($self, $uri) = @_;
+    if (utf8::is_utf8($uri)) {
+        $uri = Encode::encode('utf-8', $uri);
+    }
+    $uri =~ s{([^a-zA-Z0-9_\-./])}{ sprintf '%%%02X', ord $1 }egmosx;
+    return $uri;
+}
+
 sub decode_uri {
     my($self, $string) = @_;
     $string =~ tr/+/ /;
@@ -76,13 +86,54 @@ sub decode_uri {
     return $string;
 }
 
-sub encode_uri {
-    my($self, $uri) = @_;
-    if (utf8::is_utf8($uri)) {
-        $uri = Encode::encode('utf-8', $uri);
+my @WEEK_NAME = qw(Sunday Monday Tuesday Wednesday Thursday Friday Saturday);
+my @WEEK_ABBR = qw(Sun Mon Tue Wed Thu Fri Sat);
+my @MONTH_NAME = qw(January February March April May June July August
+    September October November December);
+my @MONTH_ABBR = qw(Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec);
+my @AMPM_NAME = qw(AM PM);
+
+sub strftime {
+    my($class, $fmt, $epoch) = @_;
+    $fmt ||= '%Oc';
+    $fmt =~ s/%c/%a %b %2d %H:%M:%S %Y/gmsx; # ANSI C's asctime() format
+    $fmt =~ s/%Oc/%a, %d %b %Y %H:%M:%S GMT/gmsx; # RFC1123
+    $fmt =~ s/%F/%Y-%m-%d/gmsx;
+    $fmt =~ s/%R/%H:%M/gmsx;
+    $fmt =~ s/%T/%H:%M:%S/gmsx;
+    my $is_utc = $fmt =~ m{GMT|UTC|[+-]00:?00|%-?[0-9]*[mdMS]Z\b};
+    my %t;
+    $t{'s'} = $epoch;
+    @t{qw(S M H d _b _y _a j _dst)} =
+        $is_utc ? CORE::gmtime $t{'s'} : CORE::localtime $t{'s'};
+    @t{qw(Y m w)} = ($t{'_y'} + 1900, $t{'_b'} + 1, $t{'_a'});
+    @t{qw(y C)} = ($t{'Y'} % 100, int $t{'Y'} / 100);
+    @t{qw(I _p)} = ($t{'H'} % 12 || 12, $t{'H'} < 12 ? 0 : 1);
+    @t{qw(A a)} = ($WEEK_NAME[$t{'_a'}], $WEEK_ABBR[$t{'_a'}]);
+    @t{qw(B b)} = ($MONTH_NAME[$t{'_b'}], $MONTH_ABBR[$t{'_b'}]);
+    @t{qw(P p)} = ($AMPM_NAME[$t{'_p'}], lc $AMPM_NAME[$t{'_p'}]);
+    if ($is_utc) {
+        @t{qw(Z z Oz)} = ('UTC', '+0000', 'Z');
     }
-    $uri =~ s{([^a-zA-Z0-9_\-./])}{ sprintf '%%%02X', ord $1 }egmosx;
-    return $uri;
+    else {
+        @t{qw(Oz z Z)} = unpack 'a5a5a*', localtime->strftime('%z%z%Z');
+        substr $t{'Oz'}, 3, 0, q{:};
+    }
+    my %p = ('Y' => '%04d', 'j' => '%d', 'w' => '%d', 's' => '%d');
+    $fmt =~ s{
+        \%
+        (?: (\%)
+        |   (-?[0-9]*)(?:([SMHIdmYyCjws])) # 2 3
+        |   ([aAbBpPzZ]|Oz) # 4
+        |   \(([^\)]*)\)([abp]) # 5 6
+        )
+    }{
+          $1 ? $1
+        : $4 ? $t{$4}
+        : $6 ? (split /\s/msx, $5)[$t{"_$6"}]
+        : (sprintf $2 ne q{} ? "%$2d" : $p{$3} ? $p{$3} : '%02d', $t{$3})
+    }egmsx;
+    return $fmt;
 }
 
 package WebResponse;
@@ -203,47 +254,44 @@ sub finalize {
     if ($env->{'REQUEST_METHOD'} eq 'HEAD') {
         $self->body(undef);
     }
-    my $response = [$self->code, [], []];
+    my $result = [$self->code, [], []];
     for my $name ($self->header) {
         next if $name !~ m/\A[A-Za-z][A-Za-z0-9]+(?:[-][A-Za-z0-9]+)*\z/msx;
         if (lc $name eq 'location') {
-            push @{$response->[1]}, $name, $self->encode_uri($self->header($name));
+            push @{$result->[1]}, $name, $self->escape_uri($self->header($name));
             next;
         }
         for my $value ($self->header($name)) {
             next if utf8::is_utf8($value);
             next if $value =~ tr/\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\xff//;
-            push @{$response->[1]}, $name, 
+            push @{$result->[1]}, $name, 
                 join "\x0d\x0a ", split /[\r\n]+[\t\040]*/msx, $value;
         }
     }
     if (defined $self->body) {
-        $response->[2][0] = $self->body;
-        if (utf8::is_utf8($response->[2][0])) {
-            $response->[2][0] = Encode::encode('UTF-8', $response->[2][0]);
+        $result->[2][0] = $self->body;
+        if (utf8::is_utf8($result->[2][0])) {
+            $result->[2][0] = Encode::encode('UTF-8', $result->[2][0]);
         }
     }
-    return $response;
+    return $result;
 }
 
 sub finalize_cookie {
     my($self) = @_;
-    my @a = qw(Sun Mon Tue Wed Thu Fri Sat);
-    my @b = qw(Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec);
     for my $key ($self->cookie) {
         my $cookie = $self->cookie($key);
         my @dough = (
-            $self->encode_uri($cookie->{'name'})
-            . q{=} . $self->encode_uri($cookie->{'value'}),
+            $self->escape_uriall($cookie->{'name'})
+            . q{=} . $self->escape_uriall($cookie->{'value'}),
             ($cookie->{'domain'} ?
-                'domain=' . $self->encode_uri($cookie->{'domain'}) : ()),
+                'domain=' . $self->escape_uriall($cookie->{'domain'}) : ()),
             ($cookie->{'path'}) ?
-                'path=' . $self->encode_uri($cookie->{'path'}) : (),
+                'path=' . $self->escape_uriall($cookie->{'path'}) : (),
         );
         if (defined $cookie->{'expires'}) {
-            my($s, $min, $h, $d, $mon, $y, $w) = gmtime $cookie->{'expires'};
-            push @dough, sprintf 'expires=%s, %02d-%s-%04d %02d:%02d:%02d GMT',
-                $a[$w], $d, $b[$mon], $y + 1900, $h, $min, $s;
+            my $t = $cookie->{'expires'};
+            push @dough, $self->strftime('expires=%a, %d-%b-%Y %T GMT', $t);
         }
         push @dough,
             ($cookie->{'secure'} ? 'secure' : ()),
@@ -365,94 +413,37 @@ sub component {
     return $obj;
 }
 
-sub bad_request {
-    my($self) = @_;
-    use utf8;
-    my $body = <<'XHTML';
-<!DOCTYPE html>
-<html>
-<head><meta encoding="utf-8" /><title>Bad Request</title></head>
-<body><h1>Bad Request</h1></body>
-</html>
-XHTML
-    $self->response->code(400);
-    $self->response->body($body);
-    return $self;
+sub bad_request { return shift->error_response('Bad Request', 400) }
+sub not_found { return shift->error_response('Not Found', 404) }
+sub length_required { return shift->error_response('Length Required', 411) }
+
+sub request_entity_too_large {
+    return shift->error_response('Request Entity Too Large', 413);
 }
 
-sub not_found {
-    my($self) = @_;
-    use utf8;
-    my $body = <<'XHTML';
-<!DOCTYPE html>
-<html>
-<head><meta encoding="utf-8" /><title>Not Found</title></head>
-<body><h1>Not Found</h1></body>
-</html>
-XHTML
-    $self->response->code(404);
-    $self->response->body($body);
-    return $self;
+sub internal_server_error {
+    return shift->error_response('Internal Server Error', 500);
 }
 
 sub method_not_allowed {
     my($self, $allow) = @_;
-    $allow ||= 'GET,HEAD';
-    use utf8;
-    my $body = <<'XHTML';
-<!DOCTYPE html>
-<html>
-<head><meta encoding="utf-8" /><title>Not Found</title></head>
-<body><h1>Not Found</h1></body>
-</html>
-XHTML
-    $self->response->code(405);
-    $self->response->header('Allow' => $allow);
-    $self->response->body($body);
-    return $self;
+    $self->response->header('Allow' => $allow || 'GET,HEAD');
+    return $self->error_response('Method Not Allowed', 405);
 }
 
-sub length_required {
-    my($self) = @_;
+sub error_response {
+    my($self, $errstr, $code) = @_;
+    $errstr = $self->escape_xml($errstr || 'Error');
     use utf8;
-    my $body = <<'XHTML';
+    my $body = <<"XHTML";
 <!DOCTYPE html>
 <html>
-<head><meta encoding="utf-8" /><title>Length Required</title></head>
-<body><h1>Length Required</h1></body>
+<head><meta charset="utf-8" /><title>$errstr</title></head>
+<body><h1>$errstr</h1></body>
+<p><a href="/">return top page</a>.
 </html>
 XHTML
-    $self->response->code(411);
-    $self->response->body($body);
-    return $self;
-}
-
-sub request_entity_too_large {
-    my($self) = @_;
-    use utf8;
-    my $body = <<'XHTML';
-<!DOCTYPE html>
-<html>
-<head><meta encoding="utf-8" /><title>Request Entity Too Large</title></head>
-<body><h1>Request Entity Too Large</h1></body>
-</html>
-XHTML
-    $self->response->code(413);
-    $self->response->body($body);
-    return $self;
-}
-
-sub internal_server_error {
-    my($self) = @_;
-    use utf8;
-    my $body = <<'XHTML';
-<!DOCTYPE html>
-<html>
-<head><meta encoding="utf-8" /><title>Internal Server Error</title></head>
-<body><h1>Internal Server Error</h1></body>
-</html>
-XHTML
-    $self->response->code(500);
+    $self->response->code($code || 500);
     $self->response->body($body);
     return $self;
 }
@@ -490,7 +481,7 @@ sub split_urlencoded {
     return \%param;
 }
 
-# in memory multipart/form-data splitter for small request entity.
+# in memory multipart/form-data splitter for small size request entity.
 sub split_multipart_formdata {
     my($self, $boundary, $multipart) = @_;
     my %param;
@@ -567,77 +558,161 @@ sub check {
     return $hash_array;
 }
 
-{
-    package WebResponder::Template;
-    use strict;
-    use warnings;
-    use Carp;
-    use Encode;
+package Text::CurlyCurly;
+use strict;
+use warnings;
+use Carp;
+use Encode;
+use parent qw(-norequire WebComponent);
 
+{
     my $MTIME = 9;
 
     my %_template;
-    my %_mtime;
+    my %_template_mtime;
 
     sub rendar {
         my($class, $name, $h) = @_;
         if (! exists $_template{$name}
-            || (stat $name)[$MTIME] > $_mtime{$name}
+            || (stat $name)[$MTIME] > $_template_mtime{$name}
         ) {
             my $src = decode('UTF-8', _read_file($name));
-            my $template = WebResponder::Template::Engine->new->parse($src);
+            my $template = $class->new({'source' => $src});
             $_template{$name} = $template;
-            $_mtime{$name} = time;
+            $_template_mtime{$name} = time;
         }
         return $_template{$name}->apply($h)->result;
     }
-
-    sub _read_file {
-        my($filename) = @_;
-        open my($fh), '<', $filename or croak "cannot open '$filename' : $!";
-        binmode $fh;
-        local $/ = undef;
-        my $body = <$fh>;
-        close $fh or croak "cannot close '$filename' : $!";
-        return $body;
-    }
 }
 
-package WebResponder::Template::Engine;
-use Carp;
-use parent qw(-norequire WebComponent);
+sub _read_file {
+    my($filename) = @_;
+    open my($fh), '<', $filename or croak "cannot open '$filename' : $!";
+    binmode $fh;
+    local $/ = undef;
+    my $body = <$fh>;
+    close $fh or croak "cannot close '$filename' : $!";
+    return $body;
+}
 
-my %NODE_FILTER = (
-    'text' => 'text', 'html' => 'xml', 'xml' => 'xml',
-    'uri' => 'uri', 'url' => 'uri', 'raw' => 'raw',
+our %FILTER_VOCABURARY = (
+    'escape' => 'escape_xml',
+    'html' => 'escape_xml', 'xml' => 'escape_xml', 'text' => 'escape_xml',
+    'htmlall' => 'escape_xmlall', 'xmlall' => 'escape_xmlall',
+    'uri' => 'escape_uri', 'url' => 'escape_uri',
+    'uriall' => 'escape_uriall', 'urlall' => 'escape_uriall',
+    'raw' => '_filter_raw',
+    'default' => '_filter_default',
+    'nl2br' => '_filter_nl2br',
+    'strip' => '_filter_strip',
+    'strip_tag' => '_filter_strip_tag',
+    'date_format' => '_filter_date_format',
+);
+our %FILTER_ESCAPER = map { $_ => $_ } qw(
+    escape_xml escape_xmlall escape_uri escape_uriall _filter_raw
 );
 
-__PACKAGE__->mk_accessors(qw(source builder result));
+__PACKAGE__->mk_accessors(qw(source perl_source perl_code result error));
+
+sub _filter_raw { return $_[1] }
+
+sub _filter_default {
+    my($class, $string, $default) = @_;
+    return defined $string && $string ne q{} ? $string : $default;
+}
+sub _filter_strip {
+    my($class, $string) = @_;
+    $string =~ tr/\x00-\x09\x0b-\x1f\x7f//d;
+    $string =~ tr/ / /s;
+    $string =~ s{(?:\x20*(?:\r\n?|\n))+}{\n}gmsx;
+    return $string;
+}
+
+sub _filter_strip_tag {
+    my($class, $string) = @_;
+    $string =~ s{<[^>]*>}{}gmsx;
+    return $string;
+}
+
+sub _filter_nl2br {
+    my($class, $string) = @_;
+    $string =~ s{(\r\n?|\n)}{<br />$1}gmsx;
+    return $string;
+}
+
+sub _filter_date_format {
+    my($class, $timestamp, $fmt) = @_;
+    my $epoch;
+    if (ref $timestamp) {
+        # can_ok 'Time::Piece' || 'DateTime', 'epoch', 'datetime'.
+        eval{ $timestamp->can('epoch') } or croak 'missing method epoch.';
+        $epoch = $timestamp->epoch;
+    }
+    elsif (! defined $timestamp || $timestamp eq 'now') {
+        $epoch = time;
+    }
+    elsif ($timestamp =~ m/\A[0-9]+(?:[.][0-9]+)?\z/msx) {
+        $epoch = $timestamp;
+    }
+    elsif ($timestamp =~ m{
+        \A(?: ([0-9]{4})[/-]([0-9]{2}) (?:[/-]([0-9]{2}))?
+            (?: [T\x20] ([0-9]{2})[:]([0-9]{2}) (?:[:]([0-9]{2})(?:[.][0-9]+)?)?)?
+            (Z|\x20*(?:GMT|UTC|[+-]00[:]?00))?
+        |   ([0-9]{2})[:]([0-9]{2}) (?:[:]([0-9]{2})(?:[.][0-9]+)?)?
+        )\z
+    }msx) {
+        my($y, $mon, $d) = ($1 || 2000, $2 || 1, $3 || 1);
+        my($h, $min, $s) = ($4 || $8 || 0, $5 || $9 || 0, $6 || $10 || 0);
+        $epoch = defined $7 ? timegm($s, $min, $h, $d, $mon - 1, $y - 1900)
+            : timelocal($s, $min, $h, $d, $mon - 1, $y - 1900);
+    }
+    else {
+        croak 'invalid time stamp format.';
+    }
+    return $class->strftime($fmt || '%FT%T', $epoch);
+}
 
 sub apply {
-    my($self, $h) = @_;
-    if (! $self->builder) {
-        $self->compile;
+    my($self, $param) = @_;
+    if (! $self->perl_code) {
+        eval { $self->make_perl_code };
     }
-    $self->result($self->builder->($self, $h));
+    my $code = $self->perl_code or croak $self->error('lost perl_code');
+    ref $code eq 'CODE' or croak $self->error('invalid perl_code');
+    my $result;
+    if (eval {
+        $result = $code->($self, $param);
+        1;
+    }) {
+        $self->result($result);
+        $self->error(undef);
+    }
+    else {
+        $self->result(undef);
+        croak $self->error($@);
+    }
     return $self;
 }
 
-sub compile {
+sub make_perl_code {
     my($self) = @_;
-    croak 'empty source' if ! $self->source;
-    my $pkg = caller;
-    my $code = eval "package $pkg;" . $self->source; ## no critic qw(StringyEval)
-    croak $@ if $@;
-    $self->builder($code);
+    if (! $self->perl_source) {
+        eval { $self->make_perl_source };
+    }
+    my $source = $self->perl_source or croak $self->error('lost perl_source');
+    my $code = eval $source; ## no critic qw(StringyEval)
+    die $self->error($@) if $@; ## no critic qw(Carping)
+    $self->error(undef);
+    $self->perl_code($code);
     return $self;
 }
 
-sub parse {
-    my($self, $s) = @_;
+sub make_perl_source {
+    my($self) = @_;
+    my $s = $self->source or croak $self->error('lost source');
 my $tmpl = <<'TMPL';
 sub{
-my($e,$h)=@_;
+my($c,$h)=@_;
 use utf8;
 my$t='';
 TMPL
@@ -650,13 +725,14 @@ TMPL
             |   (end) \s*
             |   if \s* ([a-z][a-z0-9_]*) \s*
             |   for \s* ([a-z][a-z0-9_]*) \s*
-            |   ([a-z][a-z0-9_]*) \s* (?: \| \s* (text|html|xml|uri|url|raw) \s*)?
+            |   ([a-z][a-z0-9_]*) \s*
+                ((?:\|\s*[a-z][a-z0-9_]*\s*(?:[:]\s*(?:"[^"]*"|'[^']*')\s*)*)*)
             )
             [^\{\}]*
             \}\}\n?
         )
     }gmosx) {
-        my($token, $var, $filter) = ($#-, $8 ? ($7, $8) : ($+));
+        my($token, $var, $modifier) = ($#-, $7 ? ($7, $8 || q{}) : ($+));
         if ($1 ne q{}) {
             my $const = $1;
             $const =~ s/'/\\'/gmsx;
@@ -666,15 +742,18 @@ TMPL
         }
         last if $token == $t_eof;
         next if $token == $t_rem;
-        if ($token == $t_end) {
-$tmpl .= <<'TMPL';
-}}
+        if ($token >= $t_subst) {
+            my $subst = $self->_modifier("\$h->{'$var'}", $modifier);
+$tmpl .= <<"TMPL";
+if(exists\$h->{'$var'}&&defined\$h->{'$var'}){
+\$t.=$subst;
+}
 TMPL
             next;
         }
         if ($token == $t_if) {
 $tmpl .= <<"TMPL";
-if(exists\$h->{'$var'}&&defined\$h->{'$var'}){
+if(exists\$h->{'$var'}&&\$h->{'$var'}){
 my\$g=ref\$h->{'$var'}eq'HASH'?\$h->{'$var'}:{};
 for my\$h(\$g){
 TMPL
@@ -689,12 +768,9 @@ my\$h={'nth'=>\$i+1,'odd'=>(\$i%2==0),'even'=>(\$i%2==1),'halfway'=>\$i<\$#{\$a}
 TMPL
             next;
         }
-        if ($token >= $t_subst) {
-            $filter = $NODE_FILTER{$filter || 'text'};
-$tmpl .= <<"TMPL";
-if(exists\$h->{'$var'}&&defined\$h->{'$var'}){
-\$t.=\$e->escape_$filter(\$h->{'$var'});
-}
+        if ($token == $t_end) {
+$tmpl .= <<'TMPL';
+}}
 TMPL
             next;
         }
@@ -703,8 +779,31 @@ $tmpl .= <<'TMPL';
 return $t;
 }
 TMPL
-    $self->source($tmpl);
+    $self->perl_source($tmpl);
     return $self;
+}
+
+sub _modifier {
+    my($self, $x, $modifier) = @_;
+    my $esc = 0;
+    while ($modifier =~ m{
+        \| \s* ([a-z][a-z0-9_]*) \s* ((?:[:] \s* (?:"[^"]*"|'[^']*')\s*)*)
+    }gmsx) {
+        my $func = $FILTER_VOCABURARY{$1} or next;
+        my $string_arg = $2;
+        my @arg;
+        while ($string_arg =~ m{[:] \s* (?:"([^"]*)"|'([^']*)')}gmsx) {
+            my $s = $+;
+            $s =~ s/'/\\'/g;
+            push @arg, qq{'$s'};
+        }
+        $x = '$c->' . $func . q{(} . (join q{,}, $x, @arg) . q{)};
+        $esc ||= $FILTER_ESCAPER{$func};
+    }
+    if (! $esc) {
+        $x = '$c->' . $FILTER_VOCABURARY{'escape'} . q{(} . $x . q{)};
+    }
+    return $x;
 }
 
 package UserSession;
@@ -974,17 +1073,17 @@ my $dependency = {
     ':TopPage-SignedIn' => ['TopPage::SignedIn',
         'location' => ':TOPPAGE_LOCATION',
         'template' => 't/template/toppage-signedin.html',
-        'template_engine' => 'WebResponder::Template',
+        'template_engine' => 'Text::CurlyCurly',
     ],
     ':TopPage-SignedOut' => ['TopPage::SignedOut',
         'location' => ':TOPPAGE_LOCATION',
         'template' => 't/template/toppage-signedout.html',
-        'template_engine' => 'WebResponder::Template',
+        'template_engine' => 'Text::CurlyCurly',
     ],
     ':SigninPage' => ['SigninPage',
         'location' => '/signin',
         'template' => 't/template/signin.html',
-        'template_engine' => 'WebResponder::Template',
+        'template_engine' => 'Text::CurlyCurly',
     ],
     ':SignoutPage' => ['SignoutPage',
         'location' => '/signout',
@@ -1025,11 +1124,98 @@ DemoApplication - demonstration for PSGI application of Test::XmlServer
 
 =item C<< $webcomponent->escape_xml($string) >>
 
-=item C<< $webcomponent->escape_text($string) >>
+    & to &amp;
+    < to &lt;
+    > to &gt;
+    " to &quot;
+    ' to &#39;
+    \ to &#92;
+
+    &foo; to &foo;
+    &#55; to &#55;
+    &#x37; to &#x37;
+
+=item C<< $webcomponent->escape_xmlall($string) >>
+
+    & to &amp;
+    < to &lt;
+    > to &gt;
+    " to &quot;
+    ' to &#39;
+    \ to &#92;
+
+    &foo; to &amp;foo;
+    &#55; to &amp;#55;
+    &#x37; to &amp;#x37;
+
+=item C<< $webcomponent->escape_uri($string) >>
+
+    http://example.net/foo/bar?a=1&b=2#baz
+      to http://example.net/foo/bar?a=1&b=2#baz
+
+    [^a-zA-Z0-9_\-./:&;=+\#?~] to %XX
+
+    control characters: [\x00-\x1f\x7f] to %XX
+    symbol signs: [ !"$%'()*,<>\@\[\\\]^`{|}] to %XX
+    wide characters \x{UUUU} to %XX%XX%XX (encode utf-8)
+
+=item C<< $webcomponent->escape_uriall($string) >>
+
+    http://example.net/foo/bar?a=1&b=2#baz
+      to http%3A//example.net/foo/bar%3Fa%3D1%26b%3D2%23baz
+
+    [^a-zA-Z0-9_\-./] to %XX
+
+    control characters: [\x00-\x1f\x7f] to %XX
+    symbol signs: [ !"#\$%&'()*+,:;<=>?\@\[\\\]^`{|}~] to %XX
+    wide characters \x{UUUU} to %XX%XX%XX (encode utf-8)
 
 =item C<< $webcomponent->decode_uri($url_encoded) >>
 
-=item C<< $webcomponent->encode_uri($string) >>
+=item C<< $webcomponent->strftime($format, $epoch) >>
+
+Similar as POSIX's strftime(3) function.
+When $format =~ /GMT|UTC|[+-]00:?00|%-?[0-9]*[mdMS]Z\b/,
+use gmtime $epoch, otherwise localtime $epoch internally.
+
+format:
+        %% - % itself
+        %c - '%a %b %2d %H:%M:%S %Y' ANSI C's asctime() format
+        %Oc - '%a, %d %b %Y %H:%M:%S GMT' RFC1123
+        %F - '%Y-%m-%d'
+        %T - '%H:%M:%S'
+
+        %-?[0-9]*Y - 2000 year
+        %-?[0-9]*C - 20 century
+        %-?[0-9]*y - 00 year % 100
+        
+        %-?[0-9]*m - 01 month
+        %b - Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec
+        %B - January February March April May June July August
+             September October November December
+        %(ja fe mr ap my jn jl au se oc no de)b - custom month name
+        
+        %-?[0-9]*d - 01 month day
+        
+        %-?[0-9]*H - 00 24 hour
+        %-?[0-9]*I - 12 12 hour
+        %p - am pm
+        %P - AM PM
+        %(a p)p - cutom am/pm
+        
+        %-?[0-9]*M - 00 min.
+        %-?[0-9]*S - 00 sec.
+        
+        %-?[0-9]*j - year days.
+        
+        %a - Sun Mon Tue Wed Thu Fri Sat
+        %A - Sunday Monday Tuesday Wednesday Thursday Friday Saturday
+        %(su mo tu we th fr st)a - custom week name
+        %-?[0-9]*w - week number
+
+        %Z - JST timezone
+        %z - +0900 timezone offset for RFC1123
+        %Oz - +09:00 timezone offset for ISO8601
 
 =item C<< $webresponse->code([$numeric]) >>
 
@@ -1087,6 +1273,8 @@ DemoApplication - demonstration for PSGI application of Test::XmlServer
 
 =item C<< $webresponder->internal_server_error >>
 
+=item C<< $webresponder->error_response($errstr, $code) >>
+
 =item C<< $webresponder->scan_formdata >>
 
 =item C<< $webresponder->split_urlencoded($string) >>
@@ -1097,38 +1285,44 @@ DemoApplication - demonstration for PSGI application of Test::XmlServer
 
 =item C<< $webresponder->check(\%param, \%constraint) >>
 
-=item C<< $webresponder_template->rendar($template_file_path, \%param) >>
+=item C<< Text::CurlyCurly->rendar($file_name, $param) >>
 
-briefs buildin double curly signs template engine.
+render template file name with parameters.
+
+briefs buildin double curly template engine.
 
     {{ for var }} block {{ end }}  for (@{$param->{var}}) { apply($_) }
     {{ if var }} block {{ end }}   if ($param->{var}) { apply($param->{var}) }
-    {{ var }}         substitute escape_text($param->{var})
-    {{ var | text }}  substitute escape_text($param->{var})
-    {{ var | html }}  substitute escape_xml($param->{var})
-    {{ var | xml }}   substitute escape_xml($param->{var})
-    {{ var | uri }}   substitute encode_uri($param->{var})
-    {{ var | raw }}   substitute $param->{var}
-    {{ # comment }}
+    {{ var }}           substitute escape_xml($param->{var})
+    {{ var | html }}    substitute escape_xml($param->{var})
+    {{ var | xml }}     substitute escape_xml($param->{var})
+    {{ var | htmlall }} substitute escape_xmlall($param->{var})
+    {{ var | xmlall }}  substitute escape_xmlall($param->{var})
+    {{ var | uri }}     substitute escape_uri($param->{var})
+    {{ var | uriall }}  substitute escape_uriall($param->{var})
+    {{ var | raw }}     substitute $param->{var}
+    {{ var | html | nl2br }}    substitute "\n" to "<br />\n" last.
+    {{ var | strip }}           strip whitespaces.
+    {{ var | strip_tag }}       strip all HTML tags.
+    {{ var | default : 'foo' }} substitute to 'foo' if var is blank
+    {{ var | date_format : '%F %T' }} substitute strftime
+    {{ # comment }}     comment out
 
-=item C<< $webresponder_template_engine->parse($template_content_string) >>
+=item C<< $textcurly->source($source_string) >>
 
-=item C<< $webresponder_template_engine->source([$string]) >>
+=item C<< $textcurly->perl_source($perl_source_string) >>
 
-Sets/Gets parsed template perl source code.
-It is turned on utf8 flag.
+=item C<< $textcurly->perl_code($perl_coderef) >>
 
-=item C<< $webresponder_template_engine->compile >>
+=item C<< $textcurly->result >>
 
-Compiles a perl source code to a perl code reference.
+=item C<< $textcurly->error >>
 
-=item C<< $webresponder_template_engine->builder([\&template]) >>
+=item C<< $textcurly->apply($param) >>
 
-Sets/Gets compiled template perl code reference.
+=item C<< $textcurly->make_perl_source >>
 
-=item C<< $webresponder_template_engine->apply(\%param) >>
-
-=item C<< $webresponder_template_engine->result >>
+=item C<< $textcurly->make_perl_code >>
 
 =item C<< UserSession->new_mock(%init_value) >>
 

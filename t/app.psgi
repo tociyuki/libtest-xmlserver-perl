@@ -104,7 +104,7 @@ sub strftime {
     $fmt =~ s/%T/%H:%M:%S/gmsx;
     my $is_utc = $fmt =~ m{GMT|UTC|[+-]00:?00|%-?[0-9]*[mdMS]Z\b};
     my %t;
-    $t{'s'} = $class->decode_timestamp(@arg);
+    $t{'s'} = $class->decode_datetime(@arg);
     @t{qw(S M H d _b _y _a j _dst)} =
         $is_utc ? CORE::gmtime $t{'s'} : CORE::localtime $t{'s'};
     @t{qw(Y m w)} = ($t{'_y'} + 1900, $t{'_b'} + 1, $t{'_a'});
@@ -142,7 +142,7 @@ my $BPART = 'A(?:pr|ug)|Dec|Feb|J(?:an|u[nl])|Ma[ry]|Nov|Oct|Sep';
 my $TPART = '([0-9]{2})[:]([0-9]{2})[:]([0-9]{2})';
 my %B2MONTH = map { $MONTH_ABBR[$_] => $_ } 0 .. $#MONTH_ABBR;
 
-sub decode_timestamp {
+sub decode_datetime {
     my($class, $timestamp) = @_;
     return $timestamp->epoch if eval{ $timestamp->can('epoch') };
     return time if ! defined $timestamp || $timestamp eq 'now';
@@ -1230,9 +1230,9 @@ format:
         %z - +0900 timezone offset for RFC1123
         %Oz - +09:00 timezone offset for ISO8601
 
-=item C<< $webcomponent->decode_timestamp($timestamp) >>
+=item C<< $webcomponent->decode_datetime($timestamp) >>
 
-Gets epoch from various timestamp.
+Gets epoch from various date time string.
 
     1. DateTime, Time::Piece, or any object that can epoch.
     2. string 'now' or undef.

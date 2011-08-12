@@ -1,4 +1,4 @@
-Test-XmlServer version 0.004
+Test-XmlServer version 0.005
 
 This module supports Test::Base for you to test PSGI Application
 especially formdata requests and XHTML/XML responses.

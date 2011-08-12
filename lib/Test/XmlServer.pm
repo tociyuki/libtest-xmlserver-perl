@@ -5,7 +5,7 @@ use Test::XmlServer::CommonData;
 use Test::XmlServer::Document;
 
 # $Id$
-use version; our $VERSION = '0.004';
+use version; our $VERSION = '0.005';
 
 sub request { return shift->{'request'} }
 sub expected { return shift->{'expected'} }
@@ -17,10 +17,15 @@ sub new {
     my $request = Test::XmlServer::CommonData->new;
     $request->method($block_request->[0]);
     if (defined $block_request->[1]) {
-        $request->path_info($block_request->[1]);
+        $request->request_uri($block_request->[1]);
     }
     $request->replace('header' => $block_request->[2]);
-    $request->replace('param' => $block_request->[3]);
+    if (ref $block_request->[3] eq 'ARRAY') {
+        $request->replace('param' => $block_request->[3]);
+    }
+    elsif (defined $block_request->[3] && ! ref $block_request->[3]) {
+        $request->body($block_request->[3]);
+    }
     my $expected = Test::XmlServer::CommonData->new;
     $expected->code($block_expected->[0]);
     $expected->replace('header' => $block_expected->[1]);
@@ -29,37 +34,34 @@ sub new {
         'request' => $request,
         'expected' => $expected,
         'response' => Test::XmlServer::CommonData->new,
-        'script_name' => $script_name || '/test.cgi',
+        'script_name' => $script_name || q{},
     }, $class;
 }
 
 sub run {
     my($self, $application) = @_;
     my $env = $self->_prepare_env;
-    if ($env->{'REQUEST_METHOD'} eq 'POST') {
-        my $formdata;
+    if ($env->{'REQUEST_METHOD'} eq 'POST' || $env->{'REQUEST_METHOD'} eq 'PUT') {
+        my $content;
         $env->{'CONTENT_TYPE'} ||= 'application/x-www-form-urlencoded';
-        if ($env->{'CONTENT_TYPE'} eq 'application/x-www-form-urlencoded') {
-            $formdata = $self->request->formdata;
+        if (defined $self->request->body) {
+            $content = $self->request->body;
+        }
+        elsif ($env->{'CONTENT_TYPE'} eq 'application/x-www-form-urlencoded') {
+            $content = $self->request->formdata;
         }
         elsif ($env->{'CONTENT_TYPE'} eq 'multipart/form-data') {
             my @c = ('A'..'Z', 'a'..'z', '0'..'9');
             my $boundary = join q{}, map { $c[rand @c] } 1 .. 64;
-            $formdata = $self->request->multipart_formdata($boundary);
+            $content = $self->request->multipart_formdata($boundary);
             $env->{'CONTENT_TYPE'} .= qq{; boundary=$boundary};
         }
-        $env->{'CONTENT_LENGTH'} = length $formdata;
-        open my($inputh), '<', \$formdata;
+        $env->{'CONTENT_LENGTH'} = length $content;
+        open my($inputh), '<', \$content;
         $env->{'psgi.input'} = $inputh;
         $self->_finalize_response($application->($env));
         close $inputh;
         return $self;
-    }
-    else {
-        my $formdata = $self->request->formdata;
-        if ($formdata ne q{}) {
-            $env->{'QUERY_STRING'} = $formdata;
-        }
     }
     $self->_finalize_response($application->($env));
     return $self;
@@ -68,6 +70,28 @@ sub run {
 sub _prepare_env {
     my($self) = @_;
     my $method = $self->request->method || 'GET';
+    my $script_name = $self->script_name;
+    my $request_uri = Test::XmlServer::CommonData::_encode_uri(
+        $self->request->request_uri || $script_name,
+    );
+    my($path, $q, $query) = $request_uri =~ m{\A([^?#]*)(?:(\?)([^#]*))?\z}msx;
+    if ($method ne 'POST' && $method ne 'PUT') {
+        my $formdata = $self->request->formdata;
+        if ($formdata ne q{}) {
+            if (defined $query && $query ne q{}) {
+                $query .= q{&} . $formdata;
+            }
+            else {
+                $query = $formdata;
+            }
+            $q = q{?};
+            $request_uri = $path . q{?} . $query;
+        }
+    }
+    if ($script_name eq substr $path, 0, length $script_name) {
+        substr $path, 0, length $script_name, "";
+    }
+    $path = Test::XmlServer::CommonData::_decode_uri($path);
     my $env = {
         'psgi.version' => [1, 0],
         'psgi.url_scheme' => 'http',
@@ -79,14 +103,11 @@ sub _prepare_env {
         'SERVER_PORT' => 80,
         'SERVER_PROTOCOL' => 'HTTP/1.1',
         'REQUEST_METHOD' => $method,
-        'REQUEST_URI' => $self->script_name,
-        'PATH_INFO' => $self->request->path_info,
-        'SCRIPT_NAME' => $self->script_name,
+        'REQUEST_URI' => $request_uri,
+        'SCRIPT_NAME' => $script_name,
+        'PATH_INFO' => $path ne q{} ? $path : undef,
+        'QUERY_STRING' => $q ? $query : undef,
     };
-    if (defined $env->{'PATH_INFO'}) {
-        $env->{'REQUEST_URI'}
-            .= Test::XmlServer::CommonData::_encode_uri($env->{'PATH_INFO'});
-    }
     for my $h ($self->request->header) {
         next if ! defined $self->request->header($h);
         my $header = join q{_}, map { uc } split /-/msx, $h;
@@ -105,8 +126,13 @@ sub _finalize_response {
     for my $name ($self->expected->header) {
         $self->response->header($name => scalar $res->header($name));
     }
+    my $content = join q{}, @{$psgi_res->[2]};
+    if (! ref $self->expected->body) {
+        $self->response->body($content);
+        return $self;
+    }
     $self->response->body({});
-    my $doc = Test::XmlServer::Document->new(join q{}, @{$psgi_res->[2]});
+    my $doc = Test::XmlServer::Document->new($content);
     for my $selector (keys %{$self->expected->body}) {
         my($element) = $doc->find($selector);
         if (! defined $self->expected->body->{$selector} && ! $element) {
@@ -135,7 +161,7 @@ Test::XmlServer - easy to test your PSGI Application responding XHTML.
 
 =head1 VERSION
 
-0.004
+0.005
 
 =head1 SYNOPSIS
 

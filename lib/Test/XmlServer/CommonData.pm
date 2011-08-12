@@ -4,10 +4,10 @@ use warnings;
 use Encode ();
 
 # $Id$
-use version; our $VERSION = '0.002';
+use version; our $VERSION = '0.003';
 
 __PACKAGE__->_mk_attributes(
-    \&_scalar_accessor => qw(method path_info code body),
+    \&_scalar_accessor => qw(method request_uri code body),
 );
 __PACKAGE__->_mk_attributes(
     \&_param_accessor => qw(header param),
@@ -51,8 +51,8 @@ sub formdata {
     my($self) = @_;
     my @q;
     for my $k (sort $self->param) {
-        my $ek = _encode_uri($k);
-        push @q, map { $ek . q{=} . _encode_uri($_) } $self->param($k);
+        my $ek = _encode_formdata($k);
+        push @q, map { $ek . q{=} . _encode_formdata($_) } $self->param($k);
     }
     return join q{&}, @q;
 }
@@ -61,7 +61,7 @@ sub multipart_formdata {
     my($self, $boundary) = @_;
     my $body = q{};
     for my $k (sort $self->param) {
-        my $ek = _encode_uri($k);
+        my $ek = _encode_formdata($k);
         for my $value ($self->param($k)) {
             $body .=
                   qq{--$boundary\x0d\x0a}
@@ -78,8 +78,26 @@ sub _encode_uri {
     if (utf8::is_utf8($uri)) {
         $uri = Encode::encode('utf-8', $uri);
     }
+    $uri =~ s{([^a-zA-Z0-9_\-./:&;=+\#?~])|(%[0-9A-F]{2})}{
+        $2 ? $2 : sprintf '%%%02X', ord $1
+    }egmosx;
+    return $uri;
+}
+
+sub _encode_formdata {
+    my($uri) = @_;
+    if (utf8::is_utf8($uri)) {
+        $uri = Encode::encode('utf-8', $uri);
+    }
     $uri =~ s{([^a-zA-Z0-9_,\-./])}{ sprintf '%%%02X', ord $1 }egmosx;
     return $uri;
+}
+
+sub _decode_uri {
+    my($string) = @_;
+    $string =~ tr/+/ /;
+    $string =~ s{%([0-9A-F]{2})}{chr hex $1}iegmsx;
+    return $string;
 }
 
 sub _scalar_accessor {
@@ -136,7 +154,7 @@ Test::XmlServer::CommonData - Prepared request, response, and expected data.
 
 =head1 VERSION
 
-0.002
+0.003
 
 =head1 SYNOPSIS
 
@@ -184,6 +202,8 @@ Gets/Sets parameters of formdata.
 If both $name and $value omit, returns names of parameters in an array. 
 
 =item C<< body >>
+
+Gets/Sets body for requests and responses.
 
 =back
 

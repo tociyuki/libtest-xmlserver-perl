@@ -1,5 +1,11 @@
 Revision history for Test-XmlServer
 
+0.005  Fri Aug 12 00:00:21 2011 GMT
+    ! request_uri at block->request->[1] instead of path_info.
+    + add query in request_uri from formdata for GET, HEAD, DELETE.
+    + split script_name, path and query from request_uri.
+    + enable to body comparison as string.
+
 0.004  Tue Jul 26 03:30:17 2011 GMT
     + enables to test not existing elements.
     ! REQUEST_URI from SCRIPT_NAME and PATH_INFO.

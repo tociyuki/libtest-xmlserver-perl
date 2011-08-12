@@ -25,9 +25,9 @@ plan tests => 59;
 
         ok eval{ $class->can('method') }, spec;
 
-    it 'can path_info';
+    it 'can request_uri';
 
-        ok eval{ $class->can('path_info') }, spec;
+        ok eval{ $class->can('request_uri') }, spec;
 
     it 'can code';
 
@@ -83,25 +83,25 @@ plan tests => 59;
 
         is $data->replace('method', 'PUT')->method, 'PUT', spec;
 
-    it 'should set path_info /foo';
+    it 'should set request_uri /foo';
 
-        is $data->path_info('/foo'), '/foo', spec;
+        is $data->request_uri('/foo'), '/foo', spec;
 
-    it 'should get path_info /foo';
+    it 'should get request_uri /foo';
 
-        is $data->path_info, '/foo', spec;
+        is $data->request_uri, '/foo', spec;
 
-    it 'should set path_info /bar';
+    it 'should set request_uri /bar';
 
-        is $data->path_info('/bar'), '/bar', spec;
+        is $data->request_uri('/bar'), '/bar', spec;
 
-    it 'should get path_info /bar';
+    it 'should get request_uri /bar';
 
-        is $data->path_info, '/bar', spec;
+        is $data->request_uri, '/bar', spec;
 
-    it 'should replace path_info';
+    it 'should replace request_uri';
 
-        is $data->replace('path_info', '/baz')->path_info, '/baz', spec;
+        is $data->replace('request_uri', '/baz')->request_uri, '/baz', spec;
 
     it 'should set code 200';
 
